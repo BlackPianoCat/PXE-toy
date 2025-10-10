@@ -1,0 +1,7 @@
+[pxe_servers]
+pxe-server ansible_host=pxe-server ansible_user=vagrant ansible_ssh_common_args='-F ssh-config'
+
+[pxe_clients]
+pxe-client1
+pxe-client2
+pxe-client3

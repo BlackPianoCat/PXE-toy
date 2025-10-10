@@ -1,0 +1,55 @@
+---
+- name: Install PXE packages
+  apt:
+    name:
+      - dnsmasq
+      - pxelinux
+      - syslinux-common
+      - nfs-kernel-server
+    state: present
+    update_cache: yes
+
+- name: Configure dnsmasq for DHCP + PXE
+  copy:
+    dest: /etc/dnsmasq.d/pxe.conf
+    content: |
+      interface=eth1
+      dhcp-range=192.168.50.100,192.168.50.200,12h
+      dhcp-boot=pxelinux.0
+      enable-tftp
+      tftp-root=/var/lib/tftpboot
+
+- name: Create TFTP root
+  file:
+    path: /var/lib/tftpboot
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Copy PXE bootloader from syslinux
+  copy:
+    remote_src: yes
+    src: /usr/lib/PXELINUX/pxelinux.0
+    dest: /srv/tftp/pxelinux.0
+    mode: '0755'
+
+- name: Copy PXE kernel
+  copy:
+    remote_src: yes
+    src: "/boot/vmlinuz-{{ ansible_kernel }}"
+    dest: /srv/tftp/vmlinuz
+    mode: '0644'
+
+- name: Copy PXE initrd
+  copy:
+    remote_src: yes
+    src: "/boot/initrd.img-{{ ansible_kernel }}"
+    dest: /srv/tftp/initrd.img
+    mode: '0644'
+
+- name: Ensure dnsmasq is started
+  service:
+    name: dnsmasq
+    state: started
+    enabled: yes

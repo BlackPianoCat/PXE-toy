@@ -1,0 +1,40 @@
+---
+# playbook.yml
+# Purpose: PXE infrastructure setup
+# PXE clients are placeholders (bare machines, no OS yet)
+
+# --------------------------
+# Play 1: Base packages on PXE server
+# --------------------------
+- name: Ensure base packages on PXE server
+  hosts: pxe_servers
+  become: yes
+  gather_facts: yes  # PXE server has Python
+  tasks:
+    - name: Ensure ntpdate for correct time
+      apt:
+        name: ntpdate
+        state: present
+        update_cache: yes
+
+# --------------------------
+# Play 2: Configure PXE server
+# --------------------------
+- name: Configure PXE server
+  hosts: pxe_servers
+  become: yes
+  gather_facts: yes
+  roles:
+    - pxe-server
+
+# --------------------------
+# Play 3: PXE clients placeholder
+# --------------------------
+- name: PXE clients (bare, not configured yet)
+  hosts: pxe_clients
+  gather_facts: no
+  tasks:
+    - name: Placeholder task
+      debug:
+        msg: "PXE client is bare. Will boot via PXE once server is ready."
+
