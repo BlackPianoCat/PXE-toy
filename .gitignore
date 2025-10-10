@@ -1,0 +1,27 @@
+# Vagrant
+.vagrant/
+*.log
+
+# Ansible
+*.retry
+*.pyc
+__pycache__/
+
+# Temporary files
+*.swp
+*~
+.DS_Store
+
+# SSH config (optional, if you store private keys locally)
+ssh-config
+id_rsa
+id_rsa.pub
+
+# TFTP / PXE files (if you don’t want to track large binaries)
+roles/pxe-server/files/vmlinuz
+roles/pxe-server/files/initrd.img
+roles/pxe-server/files/pxelinux.0
+
+# IDE / editor specific
+.idea/
+.vscode/
