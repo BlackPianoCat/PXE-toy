@@ -89,14 +89,6 @@ PXE-toy/
 * PXE clients are bare by default — no OS installed until network boot completes.
 * Debian netboot kernel and initrd are included under `roles/pxe-server/files/`.
 
----
-
-## License
-
-MIT License
-
----
-
 ## Author
 
 Sebastian Korsak "BlackPianoCat"
