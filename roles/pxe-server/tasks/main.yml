@@ -21,7 +21,7 @@
 
 - name: Create TFTP root
   file:
-    path: /var/lib/tftpboot
+    path: /srv/tftp
     state: directory
     owner: root
     group: root
@@ -53,3 +53,45 @@
     name: dnsmasq
     state: started
     enabled: yes
+
+# ---------------------------
+# PXE Image + NFS boot setup
+# ---------------------------
+- name: Create NFS export directory for installation image
+  file:
+    path: /srv/nfs/debian-installer
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Mount Debian netboot image
+  get_url:
+    url: "http://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/netboot.tar.gz"
+    dest: /tmp/netboot.tar.gz
+
+- name: Extract netboot image to TFTP root
+  unarchive:
+    src: /tmp/netboot.tar.gz
+    dest: /srv/tftp
+    remote_src: yes
+
+- name: Add preseed configuration for automated installs
+  copy:
+    src: preseed.cfg
+    dest: /srv/tftp/preseed.cfg
+    mode: '0644'
+
+- name: Configure NFS exports
+  copy:
+    src: exports
+    dest: /etc/exports
+    mode: '0644'
+
+- name: Export NFS shares
+  command: exportfs -ra
+
+- name: Restart NFS service
+  service:
+    name: nfs-kernel-server
+    state: restarted

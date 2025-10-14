@@ -1,7 +1,8 @@
 [pxe_servers]
-pxe-server ansible_host=pxe-server ansible_user=vagrant ansible_ssh_common_args='-F ssh-config'
+pxe-server ansible_host=192.168.56.10 ansible_user=blackpianocat ansible_password=seby4ever ansible_become=yes ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
 [pxe_clients]
-pxe-client1
-pxe-client2
-pxe-client3
+192.168.56.11
+192.168.56.12
+192.168.56.13
+

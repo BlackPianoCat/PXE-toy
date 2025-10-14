@@ -1,83 +1,48 @@
 Vagrant.configure("2") do |config|
 
-  ##############################
-  # PXE Server - Debian Bookworm
-  ##############################
   config.vm.define "pxe-server" do |server|
-    server.vm.box = "debian/bookworm64"  # Debian 12 stable
+    server.vm.box = "debian/bookworm64"
     server.vm.hostname = "pxe-server"
 
-    # Private network for PXE clients
+    # Private network for PXE lab
     server.vm.network "private_network", ip: "192.168.56.10"
 
-    # Resource allocation
-    server.vm.provider "libvirt" do |lv|
-      lv.memory = 1024   # 1 GB RAM
-      lv.cpus   = 1      # 1 CPU
+    server.vm.provider "virtualbox" do |vb|
+      vb.name   = "PXE-Server"
+      vb.memory = 1024
+      vb.cpus   = 1
+      vb.gui    = false
     end
 
-    # Minimal provisioning for PXE server
     server.vm.provision "shell", inline: <<-SHELL
-      # 1️⃣ Create admin user
-      sudo useradd -m -s /bin/bash blackpianocat
-      echo "blackpianocat:seb4ever" | sudo chpasswd
-      sudo usermod -aG sudo blackpianocat
+      # Update and install PXE stack + sudo
+      apt-get update -y
+      apt-get install -y sudo dnsmasq pxelinux syslinux-common openssh-server
 
-      # 2️⃣ Update system and install minimal PXE packages
-      sudo apt update
-      sudo DEBIAN_FRONTEND=noninteractive apt install -y dnsmasq pxelinux syslinux-common nfs-kernel-server
+      # Add Ansible user
+      useradd -m -s /bin/bash blackpianocat
+      echo "blackpianocat:seby4ever" | chpasswd
+      usermod -aG sudo blackpianocat
 
-      # 3️⃣ Create TFTP root directory
-      sudo mkdir -p /var/lib/tftpboot
-      sudo chown root:root /var/lib/tftpboot
-      sudo chmod 755 /var/lib/tftpboot
+      # Enable password authentication for SSH
+      sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      systemctl restart ssh
 
-      # 4️⃣ Copy PXE bootloader (syslinux)
-      sudo cp /usr/lib/PXELINUX/pxelinux.0 /var/lib/tftpboot/
-      sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /var/lib/tftpboot/
+      # PXE setup
+      mkdir -p /srv/tftp
+      cp /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
 
-      # 5️⃣ Enable and start dnsmasq
-      sudo systemctl enable dnsmasq
-      sudo systemctl restart dnsmasq
+      cat > /etc/dnsmasq.d/pxe.conf <<EOF
+interface=enp0s8
+dhcp-range=192.168.56.100,192.168.56.200,12h
+dhcp-boot=pxelinux.0
+enable-tftp
+tftp-root=/srv/tftp
+EOF
 
-      echo "PXE server ready with minimal OS, TFTP, and user blackpianocat"
+      systemctl enable dnsmasq
+      systemctl restart dnsmasq
     SHELL
-  end
-
-  ##############################
-  # PXE Clients - Alpine minimal
-  ##############################
-  (1..3).each do |i|
-    config.vm.define "pxe-client#{i}" do |client|
-      client.vm.box = "generic/alpine314"  # Minimal Alpine
-      client.vm.hostname = "pxe-client#{i}"
-
-      # Private network
-      client.vm.network "private_network", ip: "192.168.56.#{20+i}"
-
-      # Resource allocation
-      client.vm.provider "libvirt" do |lv|
-        lv.memory = 512   # 512 MB RAM
-        lv.cpus   = 1
-      end
-
-      # Minimal provisioning: just SSH
-      client.vm.provision "shell", inline: <<-SHELL
-        # 1️⃣ Create admin user
-        sudo adduser -D -g '' blackpianocat
-        echo "blackpianocat:seb4ever" | sudo chpasswd
-
-        # 2️⃣ Install SSH
-        sudo apk update
-        sudo apk add openssh
-
-        # 3️⃣ Enable SSH service
-        sudo rc-update add sshd
-        sudo service sshd start
-
-        echo "Alpine client #{i} ready with minimal OS and user blackpianocat"
-      SHELL
-    end
   end
 
 end

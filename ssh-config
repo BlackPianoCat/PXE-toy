@@ -1,5 +1,5 @@
 Host pxe-server
-  HostName 192.168.121.74
+  HostName 192.168.121.160
   User vagrant
   Port 22
   UserKnownHostsFile /dev/null
@@ -12,7 +12,7 @@ Host pxe-server
   HostKeyAlgorithms +ssh-rsa
 
 Host pxe-client1
-  HostName 192.168.121.215
+  HostName 192.168.121.54
   User vagrant
   Port 22
   UserKnownHostsFile /dev/null
@@ -25,7 +25,7 @@ Host pxe-client1
   HostKeyAlgorithms +ssh-rsa
 
 Host pxe-client2
-  HostName 192.168.121.198
+  HostName 192.168.121.107
   User vagrant
   Port 22
   UserKnownHostsFile /dev/null
@@ -38,7 +38,7 @@ Host pxe-client2
   HostKeyAlgorithms +ssh-rsa
 
 Host pxe-client3
-  HostName 192.168.121.197
+  HostName 192.168.121.97
   User vagrant
   Port 22
   UserKnownHostsFile /dev/null

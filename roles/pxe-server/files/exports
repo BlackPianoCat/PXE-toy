@@ -1,0 +1,1 @@
+/srv/nfs/debian-installer 192.168.56.0/24(ro,sync,no_subtree_check)
