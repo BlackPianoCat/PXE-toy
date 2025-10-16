@@ -66,7 +66,7 @@ The playbook (`playbook.yml`) performs the following steps:
 - Create a master Debian image for cloning:
   ```bash
   sudo ocs-sr -q2 -j2 -z1p -i 2000 -sc -p poweroff saveparts debian_image sda
-````
+  ```
 
 * This image is stored in `/home/partimag/debian_image/` and can be restored to PXE clients automatically.
 
