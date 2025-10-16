@@ -1,25 +1,40 @@
 ---
-- name: Install PXE packages
+# ===========================
+# PXE Server Setup (Debian)
+# ===========================
+
+- name: Install PXE, NFS, and Clonezilla packages
   apt:
     name:
       - dnsmasq
       - pxelinux
       - syslinux-common
       - nfs-kernel-server
+      - drbl
+      - clonezilla
+      - partclone
     state: present
     update_cache: yes
 
-- name: Configure dnsmasq for DHCP + PXE
+# ----------------------------
+# DHCP + PXE boot configuration
+# ----------------------------
+- name: Configure dnsmasq for DHCP + PXE boot
   copy:
     dest: /etc/dnsmasq.d/pxe.conf
     content: |
       interface=eth1
-      dhcp-range=192.168.50.100,192.168.50.200,12h
+      dhcp-range=192.168.56.100,192.168.56.200,12h
       dhcp-boot=pxelinux.0
       enable-tftp
-      tftp-root=/var/lib/tftpboot
+      tftp-root=/srv/tftp
+  notify:
+    - Restart dnsmasq
 
-- name: Create TFTP root
+# ----------------------------
+# TFTP root and bootloader setup
+# ----------------------------
+- name: Ensure TFTP root directory exists
   file:
     path: /srv/tftp
     state: directory
@@ -27,71 +42,89 @@
     group: root
     mode: '0755'
 
-- name: Copy PXE bootloader from syslinux
+- name: Copy PXE bootloader
   copy:
     remote_src: yes
     src: /usr/lib/PXELINUX/pxelinux.0
     dest: /srv/tftp/pxelinux.0
     mode: '0755'
 
-- name: Copy PXE kernel
-  copy:
-    remote_src: yes
-    src: "/boot/vmlinuz-{{ ansible_kernel }}"
-    dest: /srv/tftp/vmlinuz
-    mode: '0644'
-
-- name: Copy PXE initrd
-  copy:
-    remote_src: yes
-    src: "/boot/initrd.img-{{ ansible_kernel }}"
-    dest: /srv/tftp/initrd.img
-    mode: '0644'
-
-- name: Ensure dnsmasq is started
-  service:
-    name: dnsmasq
-    state: started
-    enabled: yes
-
-# ---------------------------
-# PXE Image + NFS boot setup
-# ---------------------------
-- name: Create NFS export directory for installation image
-  file:
-    path: /srv/nfs/debian-installer
-    state: directory
-    owner: root
-    group: root
-    mode: '0755'
-
-- name: Mount Debian netboot image
+# ----------------------------
+# Debian netboot image
+# ----------------------------
+- name: Download Debian netboot image
   get_url:
     url: "http://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/netboot.tar.gz"
     dest: /tmp/netboot.tar.gz
+    mode: '0644'
 
-- name: Extract netboot image to TFTP root
+- name: Extract Debian netboot image
   unarchive:
     src: /tmp/netboot.tar.gz
     dest: /srv/tftp
     remote_src: yes
 
-- name: Add preseed configuration for automated installs
+- name: Add preseed configuration for automated install
   copy:
     src: preseed.cfg
     dest: /srv/tftp/preseed.cfg
     mode: '0644'
 
-- name: Configure NFS exports
+# ----------------------------
+# NFS export for PXE / Clonezilla
+# ----------------------------
+- name: Create NFS export directory for Clonezilla images
+  file:
+    path: /srv/nfs/clonezilla-images
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Configure /etc/exports for NFS
   copy:
-    src: exports
+    content: |
+      /srv/nfs/clonezilla-images 192.168.56.0/24(ro,sync,no_subtree_check)
     dest: /etc/exports
     mode: '0644'
 
-- name: Export NFS shares
+- name: Apply NFS exports
   command: exportfs -ra
 
-- name: Restart NFS service
+- name: Ensure NFS service is running
   service:
     name: nfs-kernel-server
-    state: restarted
+    state: started
+    enabled: yes
+
+# ----------------------------
+# DRBL / Clonezilla PXE setup
+# ----------------------------
+- name: Initialize DRBL (Clonezilla PXE environment)
+  command: drblsrv -i
+  args:
+    creates: /etc/drbl/drbl.conf
+
+- name: Push DRBL PXE configuration
+  command: drblpush -i
+  register: drblpush_result
+  changed_when: "'Configuration files are updated' in drblpush_result.stdout or 'Done' in drblpush_result.stdout"
+
+# ----------------------------
+# Master system image reminder
+# ----------------------------
+- name: Create system image directory
+  file:
+    path: /home/partimag
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Manual reminder to create master image
+  debug:
+    msg: |
+      To create your master Debian image for cloning, run:
+        sudo ocs-sr -q2 -j2 -z1p -i 2000 -sc -p poweroff saveparts debian_image sda
+      PXE clients can then restore it automatically.
+
