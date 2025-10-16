@@ -4,6 +4,60 @@
 This project sets up a PXE boot environment with Clonezilla for disk cloning using **Ansible** and **Vagrant**.  
 The goal is to provision a PXE server and boot multiple empty clients over the network to install or clone Debian automatically.
 
+
+---
+
+## Project Goal / What We Are Trying to Do
+
+In simple terms:
+
+1. We want to **create a PXE server** that can provide network booting (PXE) to clients without an OS.  
+2. We will use **Clonezilla** to make a **master Debian image** on the server.  
+3. PXE clients will boot from the network and automatically restore this master image.  
+4. After restore, each client will have a **fully installed Debian system** identical to the master.  
+
+This setup allows rapid provisioning of multiple machines with the same OS and configuration, without manually installing each one.
+
+---
+
+## Explanation of Components
+
+- **PXE (Preboot Execution Environment)**  
+  A protocol that allows computers to boot over the network before any operating system is installed.  
+  The PXE server provides **IP addresses (DHCP)** and **boot files (TFTP)** to clients.
+
+- **dnsmasq**  
+  A lightweight service that provides **DHCP and TFTP**.  
+  - DHCP → gives clients an IP on the host-only network.  
+  - TFTP → serves the bootloader and kernel/initrd for PXE boot.
+
+- **PXELINUX / Syslinux**  
+  The **bootloader** used by PXE. It tells the client which kernel and initial RAM disk to load from the server.
+
+- **NFS (Network File System)**  
+  Used to **share directories over the network**.  
+  In this project, it allows PXE clients to access the master Debian image for cloning.
+
+- **DRBL (Diskless Remote Boot in Linux)**  
+  Provides a **server environment for PXE cloning** with Clonezilla.  
+  It prepares PXE menus and ensures clients can restore images over the network.
+
+- **Clonezilla**  
+  The **disk imaging and cloning tool**.  
+  - `ocs-sr` saves a disk image from the master server.  
+  - `ocs-sr` on clients restores the image automatically via PXE.
+
+- **Preseed file**  
+  Optional configuration for Debian automated installation.  
+  If you want to install Debian from netboot instead of cloning, preseed automates the installation steps.
+
+- **Vagrant**  
+  A tool to easily spin up virtual machines.  
+  Here, it creates the PXE server VM for testing.
+
+- **Bash script (`pxe_clients_script.sh`)**  
+  Automates creating, running, and destroying **PXE client VMs** in VirtualBox.
+
 ---
 
 ## Project Structure
