@@ -78,12 +78,12 @@ if [[ "$ACTION" == "create" || "$ACTION" == "create_run" ]]; then
         echo "Creating VM $VM_NAME..."
         VBoxManage createvm --name "$VM_NAME" --register
         VBoxManage modifyvm "$VM_NAME" \
-            --memory 512 \
-            --cpus 1 \
+            --memory 2048 \
+            --cpus 2 \
+            --ioapic on \
+    	    --boot1 net \
             --nic1 hostonly \
-            --hostonlyadapter1 "$NET_NAME" \
-            --boot1 net
-
+    	    --hostonlyadapter1 "$NET_NAME" 
         mkdir -p "$VM_DIR"
         VBoxManage createmedium disk --filename "$VDI_PATH" --size 10240 --format VDI
         VBoxManage storagectl "$VM_NAME" --name "SATA Controller" --add sata --controller IntelAhci

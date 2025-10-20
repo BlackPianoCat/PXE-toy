@@ -9,8 +9,8 @@ Vagrant.configure("2") do |config|
 
     server.vm.provider "virtualbox" do |vb|
       vb.name = "PXE-Server"
-      vb.memory = 1024
-      vb.cpus = 1
+      vb.memory = 4024
+      vb.cpus = 4
       vb.gui = false
     end
 

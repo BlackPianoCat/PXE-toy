@@ -1,40 +1,60 @@
 ---
 # ===========================
-# PXE Server Setup (Debian)
+# PXE + Clonezilla Server Setup (Debian)
 # ===========================
 
-- name: Install PXE, NFS, and Clonezilla packages
+# ----------------------------
+# Detect PXE interface (host-only adapter)
+# ----------------------------
+- name: Detect PXE interface (host-only adapter)
+  shell: ip route | awk '/default/ {print $5}'
+  register: iface_result
+  changed_when: false
+  failed_when: iface_result.rc != 0 or iface_result.stdout == ""
+
+- name: Set PXE interface fact
+  set_fact:
+    pxe_interface: "{{ iface_result.stdout | trim | default('eth1') }}"
+
+- name: Show selected PXE interface
+  debug:
+    msg: "Using PXE interface: {{ pxe_interface }}"
+
+# ----------------------------
+# Install packages
+# ----------------------------
+- name: Install PXE, NFS, and Clonezilla dependencies
   apt:
     name:
       - dnsmasq
       - pxelinux
       - syslinux-common
       - nfs-kernel-server
-      - drbl
-      - clonezilla
-      - partclone
+      - unzip
+      - net-tools
+      - tftp
     state: present
     update_cache: yes
 
 # ----------------------------
-# DHCP + PXE boot configuration
+# Configure dnsmasq (DHCP + PXE)
 # ----------------------------
-- name: Configure dnsmasq for DHCP + PXE boot
+- name: Configure dnsmasq
   copy:
     dest: /etc/dnsmasq.d/pxe.conf
     content: |
-      interface=eth1
+      interface={{ pxe_interface }}
+      bind-interfaces
       dhcp-range=192.168.56.100,192.168.56.200,12h
       dhcp-boot=pxelinux.0
       enable-tftp
       tftp-root=/srv/tftp
-  notify:
-    - Restart dnsmasq
+  notify: Restart dnsmasq
 
 # ----------------------------
-# TFTP root and bootloader setup
+# Setup TFTP root
 # ----------------------------
-- name: Ensure TFTP root directory exists
+- name: Create TFTP directory
   file:
     path: /srv/tftp
     state: directory
@@ -42,89 +62,121 @@
     group: root
     mode: '0755'
 
+# ----------------------------
+# PXELINUX bootloader
+# ----------------------------
+- name: Find pxelinux.0 in system
+  shell: |
+    for d in /usr/lib/PXELINUX /usr/lib/syslinux /usr/share/syslinux /usr/lib/syslinux/modules/bios; do
+      if [ -f "$d/pxelinux.0" ]; then echo "$d/pxelinux.0"; exit 0; fi
+    done
+  register: pxelinux_path
+  failed_when: pxelinux_path.rc != 0 or pxelinux_path.stdout == ""
+  changed_when: false
+
+- name: Show found pxelinux path
+  debug:
+    msg: "Found pxelinux.0 at {{ pxelinux_path.stdout }}"
+
 - name: Copy PXE bootloader
   copy:
     remote_src: yes
-    src: /usr/lib/PXELINUX/pxelinux.0
+    src: "{{ pxelinux_path.stdout }}"
     dest: /srv/tftp/pxelinux.0
-    mode: '0755'
-
-# ----------------------------
-# Debian netboot image
-# ----------------------------
-- name: Download Debian netboot image
-  get_url:
-    url: "http://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/netboot.tar.gz"
-    dest: /tmp/netboot.tar.gz
     mode: '0644'
 
-- name: Extract Debian netboot image
+# ----------------------------
+# Copy syslinux BIOS modules
+# ----------------------------
+- name: Copy syslinux BIOS modules to TFTP
+  shell: |
+    mkdir -p /srv/tftp/modules
+    for d in /usr/lib/syslinux/modules/bios /usr/share/syslinux; do
+      if [ -d "$d" ]; then cp -a $d/* /srv/tftp/modules/; fi
+    done
+
+# ----------------------------
+# Download and unpack Clonezilla Live
+# ----------------------------
+- name: Download Clonezilla Live ZIP (if not present)
+  get_url:
+    url: "https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip"
+    dest: /tmp/clonezilla-live.zip
+    mode: '0644'
+  when: not ("/tmp/clonezilla-live.zip" is file)
+
+- name: Extract Clonezilla Live
   unarchive:
-    src: /tmp/netboot.tar.gz
-    dest: /srv/tftp
+    src: /tmp/clonezilla-live.zip
+    dest: /srv/tftp/
     remote_src: yes
 
-- name: Add preseed configuration for automated install
-  copy:
-    src: preseed.cfg
-    dest: /srv/tftp/preseed.cfg
-    mode: '0644'
-
 # ----------------------------
-# NFS export for PXE / Clonezilla
+# PXE boot menu configuration
 # ----------------------------
-- name: Create NFS export directory for Clonezilla images
+- name: Create PXE menu directory
   file:
-    path: /srv/nfs/clonezilla-images
+    path: /srv/tftp/pxelinux.cfg
     state: directory
-    owner: root
-    group: root
-    mode: '0755'
 
-- name: Configure /etc/exports for NFS
+- name: Create PXE default menu
   copy:
+    dest: /srv/tftp/pxelinux.cfg/default
     content: |
-      /srv/nfs/clonezilla-images 192.168.56.0/24(ro,sync,no_subtree_check)
-    dest: /etc/exports
-    mode: '0644'
+      DEFAULT menu.c32
+      PROMPT 0
+      TIMEOUT 50
+      MENU TITLE PXE Boot Menu
 
-- name: Apply NFS exports
-  command: exportfs -ra
+      LABEL clonezilla
+        MENU LABEL Clonezilla Live
+        KERNEL live/vmlinuz
+        APPEND initrd=live/initrd.img boot=live username=user hostname=clonezilla fetch=tftp://192.168.56.1/live/filesystem.squashfs
 
-- name: Ensure NFS service is running
+# ----------------------------
+# Service management
+# ----------------------------
+- name: Restart dnsmasq
+  service:
+    name: dnsmasq
+    state: restarted
+    enabled: yes
+
+- name: Ensure NFS is enabled
   service:
     name: nfs-kernel-server
     state: started
     enabled: yes
 
 # ----------------------------
-# DRBL / Clonezilla PXE setup
+# Diagnostics and verification
 # ----------------------------
-- name: Initialize DRBL (Clonezilla PXE environment)
-  command: drblsrv -i
-  args:
-    creates: /etc/drbl/drbl.conf
+- name: Check if dnsmasq is listening on port 69 (TFTP)
+  shell: netstat -ulnp | grep ':69'
+  register: tftp_check
+  ignore_errors: yes
+  changed_when: false
 
-- name: Push DRBL PXE configuration
-  command: drblpush -i
-  register: drblpush_result
-  changed_when: "'Configuration files are updated' in drblpush_result.stdout or 'Done' in drblpush_result.stdout"
-
-# ----------------------------
-# Master system image reminder
-# ----------------------------
-- name: Create system image directory
-  file:
-    path: /home/partimag
-    state: directory
-    owner: root
-    group: root
-    mode: '0755'
-
-- name: Manual reminder to create master image
+- name: Show TFTP socket check result
   debug:
-    msg: |
-      To create your master Debian image for cloning, run:
-        sudo ocs-sr -q2 -j2 -z1p -i 2000 -sc -p poweroff saveparts debian_image sda
-      PXE clients can then restore it automatically.
+    msg: "{{ tftp_check.stdout | default('⚠️ No TFTP socket found') }}"
+
+- name: Check TFTP accessibility for pxelinux.0
+  shell: "echo 'get pxelinux.0' | tftp 192.168.56.1 -v -m binary"
+  register: tftp_test
+  ignore_errors: yes
+  changed_when: false
+
+- name: Show TFTP test result
+  debug:
+    msg: "{{ tftp_test.stdout | default('⚠️ TFTP test failed') }}"
+
+- name: List TFTP root contents
+  command: ls -R /srv/tftp
+  register: tftp_dir
+  changed_when: false
+
+- name: Display TFTP directory structure
+  debug:
+    var: tftp_dir.stdout
 
