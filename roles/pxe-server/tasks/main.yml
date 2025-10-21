@@ -1,6 +1,6 @@
 ---
 # ===========================
-# PXE + Clonezilla Server Setup (Debian)
+# PXE + Clonezilla + Debian Netboot Server Setup (Debian)
 # ===========================
 
 # ----------------------------
@@ -23,7 +23,7 @@
 # ----------------------------
 # Install packages
 # ----------------------------
-- name: Install PXE, NFS, and Clonezilla dependencies
+- name: Install PXE, TFTP, NFS, and dependencies
   apt:
     name:
       - dnsmasq
@@ -33,11 +33,12 @@
       - unzip
       - net-tools
       - tftp
+      - wget
     state: present
     update_cache: yes
 
 # ----------------------------
-# Configure dnsmasq (DHCP + PXE)
+# Configure dnsmasq
 # ----------------------------
 - name: Configure dnsmasq
   copy:
@@ -54,7 +55,7 @@
 # ----------------------------
 # Setup TFTP root
 # ----------------------------
-- name: Create TFTP directory
+- name: Create TFTP root directory
   file:
     path: /srv/tftp
     state: directory
@@ -74,10 +75,6 @@
   failed_when: pxelinux_path.rc != 0 or pxelinux_path.stdout == ""
   changed_when: false
 
-- name: Show found pxelinux path
-  debug:
-    msg: "Found pxelinux.0 at {{ pxelinux_path.stdout }}"
-
 - name: Copy PXE bootloader
   copy:
     remote_src: yes
@@ -91,13 +88,30 @@
 - name: Copy syslinux BIOS modules to TFTP
   shell: |
     mkdir -p /srv/tftp/modules
-    for d in /usr/lib/syslinux/modules/bios /usr/share/syslinux; do
-      if [ -d "$d" ]; then cp -a $d/* /srv/tftp/modules/; fi
-    done
+    cp -a /usr/lib/syslinux/modules/bios/* /srv/tftp/modules/
+  args:
+    executable: /bin/bash
 
 # ----------------------------
-# Download and unpack Clonezilla Live
+# PXE menu directory
 # ----------------------------
+- name: Ensure PXE menu directory
+  file:
+    path: /srv/tftp/pxelinux.cfg
+    state: directory
+    mode: '0755'
+
+# ----------------------------
+# Download and extract Clonezilla Live
+# ----------------------------
+- name: Create Clonezilla Live folder
+  file:
+    path: /srv/tftp/clonezilla/live
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Download Clonezilla Live ZIP (if not present)
   get_url:
     url: "https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip"
@@ -105,20 +119,36 @@
     mode: '0644'
   when: not ("/tmp/clonezilla-live.zip" is file)
 
-- name: Extract Clonezilla Live
+- name: Extract Clonezilla Live to correct folder
   unarchive:
     src: /tmp/clonezilla-live.zip
-    dest: /srv/tftp/
+    dest: /srv/tftp/clonezilla/live
     remote_src: yes
 
 # ----------------------------
-# PXE boot menu configuration
+# Download Debian netboot
 # ----------------------------
-- name: Create PXE menu directory
+- name: Create Debian netboot folder
   file:
-    path: /srv/tftp/pxelinux.cfg
+    path: /srv/tftp/debian
     state: directory
+    mode: '0755'
 
+- name: Download Debian vmlinuz
+  get_url:
+    url: http://ftp.debian.org/debian/dists/trixie/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux
+    dest: /srv/tftp/debian/vmlinuz
+    mode: '0644'
+
+- name: Download Debian initrd.gz
+  get_url:
+    url: http://ftp.debian.org/debian/dists/trixie/main/installer-amd64/current/images/netboot/debian-installer/amd64/initrd.gz
+    dest: /srv/tftp/debian/initrd.gz
+    mode: '0644'
+
+# ----------------------------
+# Create PXE default menu
+# ----------------------------
 - name: Create PXE default menu
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
@@ -128,10 +158,15 @@
       TIMEOUT 50
       MENU TITLE PXE Boot Menu
 
+      LABEL debian
+        MENU LABEL Debian Installer
+        KERNEL debian/vmlinuz
+        APPEND initrd=debian/initrd.gz
+
       LABEL clonezilla
         MENU LABEL Clonezilla Live
-        KERNEL live/vmlinuz
-        APPEND initrd=live/initrd.img boot=live username=user hostname=clonezilla fetch=tftp://192.168.56.1/live/filesystem.squashfs
+        KERNEL clonezilla/live/vmlinuz
+        APPEND initrd=clonezilla/live/initrd.img boot=live username=user hostname=clonezilla fetch=tftp://{{ pxe_interface }}/clonezilla/live/filesystem.squashfs
 
 # ----------------------------
 # Service management
@@ -147,36 +182,4 @@
     name: nfs-kernel-server
     state: started
     enabled: yes
-
-# ----------------------------
-# Diagnostics and verification
-# ----------------------------
-- name: Check if dnsmasq is listening on port 69 (TFTP)
-  shell: netstat -ulnp | grep ':69'
-  register: tftp_check
-  ignore_errors: yes
-  changed_when: false
-
-- name: Show TFTP socket check result
-  debug:
-    msg: "{{ tftp_check.stdout | default('⚠️ No TFTP socket found') }}"
-
-- name: Check TFTP accessibility for pxelinux.0
-  shell: "echo 'get pxelinux.0' | tftp 192.168.56.1 -v -m binary"
-  register: tftp_test
-  ignore_errors: yes
-  changed_when: false
-
-- name: Show TFTP test result
-  debug:
-    msg: "{{ tftp_test.stdout | default('⚠️ TFTP test failed') }}"
-
-- name: List TFTP root contents
-  command: ls -R /srv/tftp
-  register: tftp_dir
-  changed_when: false
-
-- name: Display TFTP directory structure
-  debug:
-    var: tftp_dir.stdout
 
