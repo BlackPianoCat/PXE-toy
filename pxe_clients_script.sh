@@ -78,7 +78,7 @@ if [[ "$ACTION" == "create" || "$ACTION" == "create_run" ]]; then
         echo "Creating VM $VM_NAME..."
         VBoxManage createvm --name "$VM_NAME" --register
         VBoxManage modifyvm "$VM_NAME" \
-            --memory 2048 \
+            --memory 4096 \
             --cpus 2 \
             --ioapic on \
     	    --boot1 net \
