@@ -85,35 +85,43 @@
 # ----------------------------
 # Download Debian Live ISO (XFCE)
 # ----------------------------
+- name: Create directories for Debian Live ISO
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /srv/iso
+    - /srv/tftp/debian-live
+    - /mnt/debian
+
 - name: Download Debian Live XFCE ISO
   get_url:
-    url: "https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.1.0-amd64-xfce.iso"
-    dest: /tmp/debian-live-xfce.iso
+    url: "https://cdimage.debian.org/cdimage/weekly-live-builds/amd64/iso-hybrid/debian-live-testing-amd64-xfce.iso"
+    dest: "/srv/iso/debian-live-amd64-xfce.iso"
     mode: '0644'
-  when: not ("/tmp/debian-live-xfce.iso" is file)
+  register: debian_iso
 
-# ----------------------------
-# Mount and copy Debian Live contents
-# ----------------------------
-- name: Mount Debian Live ISO
+- name: Mount Debian ISO
   mount:
-    path: /mnt/debian-live
-    src: /tmp/debian-live-xfce.iso
+    path: /mnt/debian
+    src: /srv/iso/debian-live-amd64-xfce.iso
     fstype: iso9660
     state: mounted
 
 - name: Copy live files to TFTP directory
   shell: |
     mkdir -p /srv/tftp/debian-live
-    cp -r /mnt/debian-live/live /srv/tftp/debian-live/
-    cp -r /mnt/debian-live/isolinux/* /srv/tftp/debian-live/
+    cp -r /mnt/debian/live /srv/tftp/debian-live/
+    cp -r /mnt/debian/isolinux/* /srv/tftp/debian-live/
   args:
     executable: /bin/bash
 
 - name: Unmount Debian Live ISO
   mount:
-    path: /mnt/debian-live
+    path: /mnt/debian
     state: unmounted
+
 
 # ----------------------------
 # Download and unpack Clonezilla Live
@@ -143,6 +151,17 @@
     mode: '0755'
 
 # ----------------------------
+# Ensure PXE config directory exists
+# ----------------------------
+- name: Create pxelinux.cfg directory
+  file:
+    path: /srv/tftp/pxelinux.cfg
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: '0755'
+
+# ----------------------------
 # PXE boot menu configuration
 # ----------------------------
 - name: Create PXE default menu for Debian Live XFCE
@@ -155,7 +174,7 @@
       MENU TITLE PXE Boot Menu
 
       LABEL debianlive
-        MENU LABEL Debian Live 13.1.0 XFCE
+        MENU LABEL Debian Live 13.2.0 XFCE
         KERNEL debian-live/live/vmlinuz
         APPEND initrd=debian-live/live/initrd.img boot=live components fetch=tftp://{{ pxe_ip.stdout }}/debian-live/live/filesystem.squashfs
 
@@ -203,48 +222,6 @@
   delay: 5
   until: dnsmasq_pid.rc == 0
   changed_when: false
-
-# -----------------------------------
-# Deploy Debian Live ISO for PXE boot
-# -----------------------------------
-- name: Create directories for Debian Live ISO
-  file:
-    path: "{{ item }}"
-    state: directory
-    mode: '0755'
-  loop:
-    - /srv/iso
-    - /srv/tftp/debian-live
-    - /mnt/debian
-
-- name: Download Debian Live ISO
-  get_url:
-    url: "https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.1.0-amd64-xfce.iso"
-    dest: "/srv/iso/debian-live-13.1.0-amd64-xfce.iso"
-    mode: '0644'
-  register: debian_iso
-
-- name: Mount Debian ISO
-  mount:
-    path: /mnt/debian
-    src: /srv/iso/debian-live-13.1.0-amd64-xfce.iso
-    fstype: iso9660
-    state: mounted
-
-- name: Copy Debian Live boot files (vmlinuz, initrd, etc.)
-  copy:
-    src: "{{ item }}"
-    dest: /srv/tftp/debian-live/
-    remote_src: yes
-  with_items:
-    - /mnt/debian/live
-    - /mnt/debian/isolinux
-  ignore_errors: yes
-
-- name: Unmount Debian ISO
-  mount:
-    path: /mnt/debian
-    state: unmounted
 
 # -----------------------------------
 # Configure nginx to serve Debian files (faster than TFTP)
