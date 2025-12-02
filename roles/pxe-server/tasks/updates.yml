@@ -18,7 +18,7 @@
     - /srv/live-build/pxe-root/dev
     - /srv/live-build/pxe-root/dev/pts
 
-# Mount virtual filesystems for apt inside chroot
+# Mount virtual filesystems for chroot
 - name: Mount /proc
   mount:
     path: /srv/live-build/pxe-root/proc
@@ -34,18 +34,14 @@
     state: mounted
 
 - name: Bind-mount /dev
-  mount:
-    path: /srv/live-build/pxe-root/dev
-    src: /dev
-    opts: bind
-    state: mounted
+  command: mount --bind /dev /srv/live-build/pxe-root/dev
+  args:
+    creates: /srv/live-build/pxe-root/dev
 
 - name: Bind-mount /dev/pts
-  mount:
-    path: /srv/live-build/pxe-root/dev/pts
-    src: /dev/pts
-    opts: bind
-    state: mounted
+  command: mount --bind /dev/pts /srv/live-build/pxe-root/dev/pts
+  args:
+    creates: /srv/live-build/pxe-root/dev/pts
 
 # Update and upgrade inside PXE root
 - name: Update apt cache inside PXE root

@@ -69,14 +69,22 @@
   command: chroot /srv/live-build/pxe-root /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install sudo vim curl wget net-tools htop tree"
 
 # ----------------------------
-# Create users inside PXE image
+# Create users inside PXE image (idempotent)
 # ----------------------------
-- name: Create users without passwords
-  block:
-    - command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash blackpianocat"
-    - command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash whitesexyorca"
 
-- name: Create users with predefined passwords
+- name: Create users without passwords if not exists
+  vars:
+    users_no_pass:
+      - blackpianocat
+      - whitesexyorca
+  loop: "{{ users_no_pass }}"
+  loop_control:
+    loop_var: user
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "id -u {{ user }} || useradd -m -s /bin/bash {{ user }}"
+
+- name: Create users with predefined passwords if not exists
   vars:
     users_passwords:
       - { name: "whitesmellyracoon", password: "racoonsfart" }
@@ -84,12 +92,16 @@
   loop: "{{ users_passwords }}"
   loop_control:
     loop_var: user
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash {{ user.name }} && echo '{{ user.name }}:{{ user.password }}' | chpasswd"
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "id -u {{ user.name }} || (useradd -m -s /bin/bash {{ user.name }} && echo '{{ user.name }}:{{ user.password }}' | chpasswd)"
 
-- name: Create user redhandsomegorilla forcing password change on first login
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash redhandsomegorilla && passwd -d redhandsomegorilla && chage -d 0 redhandsomegorilla"
+- name: Create user redhandsomegorilla forcing password change on first login if not exists
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "id -u redhandsomegorilla || (useradd -m -s /bin/bash redhandsomegorilla && passwd -d redhandsomegorilla && chage -d 0 redhandsomegorilla)"
 
-- name: Configure sudoers
+- name: Configure sudoers for admin and blackpianocat
   block:
     - copy:
         dest: /srv/live-build/pxe-root/etc/sudoers.d/admin
