@@ -1,0 +1,124 @@
+---
+# roles/pxe-server/tasks/debootstrap.yml
+# Fully bootstrap a PXE Debian image with updates, programs, and users
+
+- name: Ensure working directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - /srv/live-build/work
+    - /srv/live-build/pxe-root
+
+- name: Bootstrap minimal Debian system
+  command: >
+    debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
+  args:
+    creates: /srv/live-build/pxe-root/bin/bash
+
+- name: Ensure /proc, /sys, /dev, /dev/pts exist in PXE root
+  file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - /srv/live-build/pxe-root/proc
+    - /srv/live-build/pxe-root/sys
+    - /srv/live-build/pxe-root/dev
+    - /srv/live-build/pxe-root/dev/pts
+
+- name: Mount /proc inside PXE root
+  mount:
+    path: /srv/live-build/pxe-root/proc
+    src: proc
+    fstype: proc
+    state: mounted
+
+- name: Mount /sys inside PXE root
+  mount:
+    path: /srv/live-build/pxe-root/sys
+    src: sysfs
+    fstype: sysfs
+    state: mounted
+
+- name: Bind-mount /dev inside PXE root
+  mount:
+    path: /srv/live-build/pxe-root/dev
+    src: /dev
+    fstype: none
+    opts: bind
+    state: mounted
+
+- name: Bind-mount /dev/pts inside PXE root
+  mount:
+    path: /srv/live-build/pxe-root/dev/pts
+    src: /dev/pts
+    fstype: none
+    opts: bind
+    state: mounted
+
+# ----------------------------
+# Update system inside chroot
+# ----------------------------
+- name: Update apt and upgrade inside PXE image
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
+
+# ----------------------------
+# Install basic packages
+# ----------------------------
+- name: Install essential Linux tools
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install sudo vim curl wget net-tools htop tree"
+
+# ----------------------------
+# Create users inside PXE image
+# ----------------------------
+- name: Create users without passwords
+  block:
+    - command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash blackpianocat"
+    - command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash whitesexyorca"
+
+- name: Create users with predefined passwords
+  vars:
+    users_passwords:
+      - { name: "whitesmellyracoon", password: "racoonsfart" }
+      - { name: "admin", password: "admin_rocks" }
+  loop: "{{ users_passwords }}"
+  loop_control:
+    loop_var: user
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash {{ user.name }} && echo '{{ user.name }}:{{ user.password }}' | chpasswd"
+
+- name: Create user redhandsomegorilla forcing password change on first login
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "useradd -m -s /bin/bash redhandsomegorilla && passwd -d redhandsomegorilla && chage -d 0 redhandsomegorilla"
+
+- name: Configure sudoers
+  block:
+    - copy:
+        dest: /srv/live-build/pxe-root/etc/sudoers.d/admin
+        mode: '0440'
+        content: |
+          admin ALL=(ALL) ALL
+    - copy:
+        dest: /srv/live-build/pxe-root/etc/sudoers.d/blackpianocat
+        mode: '0440'
+        content: |
+          blackpianocat ALL=(ALL) NOPASSWD: ALL
+
+# ----------------------------
+# Clean up apt cache inside chroot
+# ----------------------------
+- name: Clean apt cache inside PXE image
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
+
+# ----------------------------
+# Unmount virtual filesystems
+# ----------------------------
+- name: Unmount virtual filesystems
+  block:
+    - command: umount /srv/live-build/pxe-root/proc
+      ignore_errors: yes
+    - command: umount /srv/live-build/pxe-root/sys
+      ignore_errors: yes
+    - command: umount /srv/live-build/pxe-root/dev/pts
+      ignore_errors: yes
+    - command: umount /srv/live-build/pxe-root/dev
+      ignore_errors: yes
+

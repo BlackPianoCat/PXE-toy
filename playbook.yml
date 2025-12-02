@@ -17,6 +17,19 @@
         state: present
         update_cache: yes
 
+- name: PXE server bootstrap
+  hosts: pxe_servers
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Ensure debootstrap is installed on PXE server
+      apt:
+        name: debootstrap
+        state: present
+        update_cache: yes
+
+
 # --------------------------
 # Play 2: Configure PXE server
 # --------------------------
@@ -24,6 +37,8 @@
   hosts: pxe_servers
   become: yes
   gather_facts: yes
+  vars:
+    chroot_path: /srv/live-build/chroot
   roles:
     - pxe-server
 

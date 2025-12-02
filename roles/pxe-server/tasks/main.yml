@@ -1,15 +1,12 @@
 ---
 # Main entry point for PXE server role
-# Orchestrates updates, programs, users, and PXE setup
+# Orchestrates PXE server setup and Debian image bootstrap
 
-# 0. PXE, Clonezilla, TFTP, nginx setup
+# 1. PXE server setup (TFTP, dnsmasq, nginx, etc.)
 - import_tasks: setup.yml
 
-# 1. Update and upgrade system
+# 2. Bootstrap Debian rootfs for PXE clients
+- import_tasks: debootstrap.yml
+
+# 3. Perform updates in the image
 - import_tasks: updates.yml
-
-# 2. Install programs
-- import_tasks: programs.yml
-
-# 3. Create users and configure sudo
-- import_tasks: users.yml

@@ -95,12 +95,12 @@
     - /srv/tftp/debian-live
     - /mnt/debian
 
-- name: Download Debian Live XFCE ISO
+- name: Download Debian Live XFCE ISO if not already downloaded
   get_url:
     url: "https://cdimage.debian.org/cdimage/weekly-live-builds/amd64/iso-hybrid/debian-live-testing-amd64-xfce.iso"
     dest: "/srv/iso/debian-live-amd64-xfce.iso"
     mode: '0644'
-  register: debian_iso
+  when: not ("/srv/iso/debian-live-amd64-xfce.iso" is file)
 
 - name: Mount Debian ISO
   mount:
@@ -126,7 +126,7 @@
 # ----------------------------
 # Download and unpack Clonezilla Live
 # ----------------------------
-- name: Download Clonezilla Live ZIP (if not present)
+- name: Download Clonezilla Live ZIP if not already downloaded
   get_url:
     url: "https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip"
     dest: /tmp/clonezilla-live.zip
