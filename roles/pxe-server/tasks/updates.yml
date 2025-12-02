@@ -1,0 +1,11 @@
+---
+# Only tasks, no hosts/gather_facts
+- name: Update apt cache inside PXE image
+  chroot:
+    path: /srv/live-build
+    cmd: apt-get update
+
+- name: Upgrade packages inside PXE image
+  chroot:
+    path: /srv/live-build
+    cmd: apt-get -y dist-upgrade

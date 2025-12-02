@@ -1,0 +1,51 @@
+- name: Configure users inside PXE image
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  vars:
+    chroot_path: /srv/live-build
+  tasks:
+    - name: Create users with no password
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: useradd -m -s /bin/bash blackpianocat
+
+    - name: Create whitesexyorca user
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: useradd -m -s /bin/bash whitesexyorca
+
+    - name: Create users with predefined passwords
+      vars:
+        users_passwords:
+          - { name: "whitesmellyracoon", password: "racoonsfart" }
+          - { name: "admin", password: "admin_rocks" }
+      loop: "{{ users_passwords }}"
+      loop_control:
+        loop_var: user
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: "useradd -m -s /bin/bash {{ user.name }} && echo '{{ user.name }}:{{ user.password }}' | chpasswd"
+
+    - name: Create user redhandsomegorilla forcing password change on first login
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: |
+          useradd -m -s /bin/bash redhandsomegorilla
+          passwd -d redhandsomegorilla
+          chage -d 0 redhandsomegorilla
+
+    - name: Give admin full sudo
+      copy:
+        dest: "{{ chroot_path }}/etc/sudoers.d/admin"
+        mode: '0440'
+        content: |
+          admin ALL=(ALL) ALL
+
+    - name: Give blackpianocat passwordless sudo
+      copy:
+        dest: "{{ chroot_path }}/etc/sudoers.d/blackpianocat"
+        mode: '0440'
+        content: |
+          blackpianocat ALL=(ALL) NOPASSWD: ALL
+

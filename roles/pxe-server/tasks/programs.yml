@@ -1,0 +1,21 @@
+- name: Install programs inside PXE image
+  hosts: localhost
+  become: yes
+  gather_facts: yes
+  vars:
+    chroot_path: /srv/live-build
+  tasks:
+    - name: Install basic Linux utilities
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: >
+          apt-get install -y tree ncdu htop curl wget git unzip vim tmux
+          net-tools build-essential
+
+    - name: Install high-level programs
+      chroot:
+        path: "{{ chroot_path }}"
+        cmd: >
+          apt-get install -y krita inkscape gimp texlive-full texmaker
+          libreoffice python3-pip python3-venv
+
