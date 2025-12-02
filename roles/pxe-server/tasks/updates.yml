@@ -1,11 +1,13 @@
 ---
-# Only tasks, no hosts/gather_facts
+# Update and upgrade inside PXE image using chroot
+
 - name: Update apt cache inside PXE image
-  chroot:
-    path: /srv/live-build
-    cmd: apt-get update
+  shell: chroot /srv/live-build /bin/bash -c "apt-get update"
+  args:
+    executable: /bin/bash
 
 - name: Upgrade packages inside PXE image
-  chroot:
-    path: /srv/live-build
-    cmd: apt-get -y dist-upgrade
+  shell: chroot /srv/live-build /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade"
+  args:
+    executable: /bin/bash
+
