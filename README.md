@@ -3,6 +3,18 @@
 This project sets up a **PXE boot server** for deploying Debian systems or Clonezilla live environments using **Ansible** and **Vagrant**.
 It enables network boot of diskless clients on a private LAN, supporting both **Debian Live boot** and **Clonezilla cloning** workflows.
 
+```text
+_________________________________________
+/ Just the Software is fucking awesome   \
+\ and you should use it to learn PXE!     /
+ -----------------------------------------
+        \   ^__^
+         \  (oo)\_______
+            (__)\       )\/\
+                ||----w |
+                ||     ||
+```
+
 ---
 
 ## 🎯 Project Goals

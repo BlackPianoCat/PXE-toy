@@ -7,6 +7,3 @@
 
 # 2. Bootstrap Debian rootfs for PXE clients
 - import_tasks: debootstrap.yml
-
-# 3. Perform updates in the image
-- import_tasks: updates.yml

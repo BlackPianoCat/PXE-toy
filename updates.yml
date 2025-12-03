@@ -1,0 +1,95 @@
+---
+- hosts: pxe-server
+  become: yes
+  gather_facts: no
+
+  vars:
+    pxe_root: /srv/live-build/pxe-root
+
+  tasks:
+
+    # ----------------------------
+    # Ensure dirs exist
+    # ----------------------------
+    - name: Ensure PXE root exists
+      file:
+        path: "{{ pxe_root }}"
+        state: directory
+
+    - name: Ensure chroot mountpoints exist
+      file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ pxe_root }}/proc"
+        - "{{ pxe_root }}/sys"
+        - "{{ pxe_root }}/dev"
+        - "{{ pxe_root }}/dev/pts"
+
+    # ----------------------------
+    # Mount virtual filesystems
+    # ----------------------------
+    - name: Mount /proc
+      mount:
+        path: "{{ pxe_root }}/proc"
+        src: proc
+        fstype: proc
+        state: mounted
+
+    - name: Mount /sys
+      mount:
+        path: "{{ pxe_root }}/sys"
+        src: sysfs
+        fstype: sysfs
+        state: mounted
+
+    - name: Bind mount /dev
+      mount:
+        path: "{{ pxe_root }}/dev"
+        src: /dev
+        fstype: none
+        opts: bind
+        state: mounted
+
+    - name: Bind mount /dev/pts
+      mount:
+        path: "{{ pxe_root }}/dev/pts"
+        src: /dev/pts
+        fstype: none
+        opts: bind
+        state: mounted
+
+    # ----------------------------
+    # Update system inside chroot
+    # ----------------------------
+    - name: Update apt cache
+      command: >
+        chroot {{ pxe_root }} /bin/bash -c "apt-get update"
+
+    - name: Upgrade packages
+      command: >
+        chroot {{ pxe_root }} /bin/bash -c
+        "DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
+
+    - name: Clean apt cache
+      command: >
+        chroot {{ pxe_root }} /bin/bash -c "apt-get clean"
+
+    # ----------------------------
+    # Unmount virtual filesystems
+    # ----------------------------
+    - name: Lazy unmount /dev/pts
+      command: umount -l {{ pxe_root }}/dev/pts
+      ignore_errors: yes
+
+    - name: Lazy unmount /dev
+      command: umount -l {{ pxe_root }}/dev
+      ignore_errors: yes
+
+    - name: Lazy unmount /sys
+      command: umount -l {{ pxe_root }}/sys
+      ignore_errors: yes
+
+    - name: Lazy unmount /proc
+      command: umount -l {{ pxe_root }}/proc
+      ignore_errors: yes
