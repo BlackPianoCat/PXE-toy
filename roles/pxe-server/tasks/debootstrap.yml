@@ -1,21 +1,31 @@
 ---
 # roles/pxe-server/tasks/debootstrap.yml
 # Fully bootstrap a PXE Debian image with updates, programs, and users
+# Includes detailed comments for clarity
 
+# ----------------------------
+# Ensure working directories exist
+# ----------------------------
 - name: Ensure working directories exist
   file:
     path: "{{ item }}"
     state: directory
   loop:
-    - /srv/live-build/work
-    - /srv/live-build/pxe-root
+    - /srv/live-build/work       # temporary work directory for debootstrap operations
+    - /srv/live-build/pxe-root   # target root filesystem for PXE boot
 
+# ----------------------------
+# Bootstrap minimal Debian system
+# ----------------------------
 - name: Bootstrap minimal Debian system
   command: >
     debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
   args:
-    creates: /srv/live-build/pxe-root/bin/bash
+    creates: /srv/live-build/pxe-root/bin/bash  # skip if already bootstrapped
 
+# ----------------------------
+# Prepare essential virtual filesystems in PXE root
+# ----------------------------
 - name: Ensure /proc, /sys, /dev, /dev/pts exist in PXE root
   file:
     path: "{{ item }}"
@@ -63,7 +73,7 @@
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
 
 # ----------------------------
-# Install basic packages
+# Install essential Linux tools
 # ----------------------------
 - name: Install essential Linux tools
   command: chroot /srv/live-build/pxe-root /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install sudo vim curl wget net-tools htop tree"
@@ -71,7 +81,6 @@
 # ----------------------------
 # Create users inside PXE image (idempotent)
 # ----------------------------
-
 - name: Create users without passwords if not exists
   vars:
     users_no_pass:
@@ -101,6 +110,9 @@
     chroot /srv/live-build/pxe-root /bin/bash -c
     "id -u redhandsomegorilla || (useradd -m -s /bin/bash redhandsomegorilla && passwd -d redhandsomegorilla && chage -d 0 redhandsomegorilla)"
 
+# ----------------------------
+# Configure sudoers
+# ----------------------------
 - name: Configure sudoers for admin and blackpianocat
   block:
     - copy:
@@ -121,7 +133,7 @@
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
 
 # ----------------------------
-# Unmount virtual filesystems
+# Unmount virtual filesystems after setup
 # ----------------------------
 - name: Unmount virtual filesystems
   block:
@@ -133,4 +145,76 @@
       ignore_errors: yes
     - command: umount /srv/live-build/pxe-root/dev
       ignore_errors: yes
+
+# ----------------------------
+# Install kernel inside chroot
+# ----------------------------
+- name: Install kernel inside chroot
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "DEBIAN_FRONTEND=noninteractive apt-get -y install linux-image-amd64"
+
+# ----------------------------
+# Copy kernel and initrd to TFTP directory
+# ----------------------------
+- name: Copy kernel to TFTP
+  shell: |
+    cp /srv/live-build/pxe-root/boot/vmlinuz-* /srv/tftp/vmlinuz
+  args:
+    executable: /bin/bash
+
+- name: Copy initrd to TFTP
+  shell: |
+    cp /srv/live-build/pxe-root/boot/initrd.img-* /srv/tftp/initrd.img
+  args:
+    executable: /bin/bash
+
+# ----------------------------
+# Configure NFS export for PXE root
+# ----------------------------
+- name: Ensure /etc/exports.d exists
+  file:
+    path: /etc/exports.d
+    state: directory
+    mode: '0755'
+
+- name: Configure NFS export for PXE root
+  copy:
+    dest: /etc/exports.d/pxe-root.exports
+    mode: '0644'
+    content: |
+      /srv/live-build/pxe-root {{ pxe_ip.stdout }}/24(rw,no_root_squash,no_subtree_check)
+      # use PXE interface IP to allow clients on correct subnet to mount
+
+- name: Reload NFS exports
+  command: exportfs -ra
+  # ensures NFS exports are active and visible to clients
+
+# ----------------------------
+# Include NFS and network modules in initrd
+# ----------------------------
+- name: Ensure NFS and network modules included in initrd
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "echo 'nfs nfsd nfsv3 nfsv4 ext4 inet' >> /etc/initramfs-tools/modules && update-initramfs -u -k all"
+  # necessary for PXE boot with NFS root
+
+# ----------------------------
+# PXE menu entry for bootstrapped Debian
+# ----------------------------
+- name: Create PXE boot menu entry for bootstrapped Debian
+  copy:
+    dest: /srv/tftp/pxelinux.cfg/default
+    mode: '0644'
+    content: |
+      DEFAULT debianpxe
+      PROMPT 0
+      TIMEOUT 50
+
+      LABEL debianpxe
+        MENU LABEL Debian PXE boot (debootstrap)
+        KERNEL vmlinuz
+        INITRD initrd.img
+        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp
+        # PXE client mounts the NFS root from correct PXE interface IP
 

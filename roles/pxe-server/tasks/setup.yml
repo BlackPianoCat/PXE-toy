@@ -1,10 +1,10 @@
 ---
 # ===========================
-# PXE + Clonezilla Server Setup (Debian)
+# PXE + NFS-root Debian boot (no Debian Live)
 # ===========================
 
 # ----------------------------
-# Detect PXE interface (host-only adapter)
+# Detect PXE interface
 # ----------------------------
 - name: Detect PXE interface (host-only adapter)
   shell: ip -o -4 addr show | awk '/192\.168\.56\./ {print $2; exit}'
@@ -14,20 +14,15 @@
 
 - name: Set PXE interface fact
   set_fact:
-    pxe_interface: "{{ iface_result.stdout | trim | default('eth1') }}"
+    pxe_interface: "{{ iface_result.stdout | trim }}"
 
 - name: Detect PXE interface IP
   shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {gsub("/.*","",$2); print $2}'
   register: pxe_ip
   changed_when: false
-  failed_when: pxe_ip.rc != 0 or pxe_ip.stdout == ""
-
-- name: Show PXE interface info
-  debug:
-    msg: "Using interface {{ pxe_interface }} with IP {{ pxe_ip.stdout }}"
 
 # ----------------------------
-# Install packages
+# Install PXE and NFS packages
 # ----------------------------
 - name: Install PXE, NFS, and Clonezilla dependencies
   apt:
@@ -43,7 +38,7 @@
     update_cache: yes
 
 # ----------------------------
-# Setup TFTP root
+# Prepare TFTP root
 # ----------------------------
 - name: Create TFTP directory
   file:
@@ -54,7 +49,7 @@
     mode: '0755'
 
 # ----------------------------
-# PXELINUX bootloader
+# Copy PXE bootloader
 # ----------------------------
 - name: Find pxelinux.0 in system
   shell: |
@@ -62,10 +57,9 @@
       if [ -f "$d/pxelinux.0" ]; then echo "$d/pxelinux.0"; exit 0; fi
     done
   register: pxelinux_path
-  failed_when: pxelinux_path.rc != 0 or pxelinux_path.stdout == ""
   changed_when: false
 
-- name: Copy PXE bootloader
+- name: Copy pxelinux.0
   copy:
     remote_src: yes
     src: "{{ pxelinux_path.stdout }}"
@@ -83,7 +77,7 @@
     done
 
 # ----------------------------
-# Download Debian Live ISO (XFCE)
+# Download Debian Live XFCE ISO (for bootstrap use only)
 # ----------------------------
 - name: Create directories for Debian Live ISO
   file:
@@ -92,7 +86,6 @@
     mode: '0755'
   loop:
     - /srv/iso
-    - /srv/tftp/debian-live
     - /mnt/debian
 
 - name: Download Debian Live XFCE ISO
@@ -100,105 +93,67 @@
     url: "https://cdimage.debian.org/cdimage/weekly-live-builds/amd64/iso-hybrid/debian-live-testing-amd64-xfce.iso"
     dest: "/srv/iso/debian-live-amd64-xfce.iso"
     mode: '0644'
+    force: no
   register: debian_iso
 
-- name: Mount Debian ISO
-  mount:
-    path: /mnt/debian
-    src: /srv/iso/debian-live-amd64-xfce.iso
-    fstype: iso9660
-    state: mounted
+# (Not mounted, not used for booting. Only available if you want to extract pool packages later.)
 
-- name: Copy live files to TFTP directory
+# ----------------------------
+# Download Clonezilla Live ZIP using aria2c (fast and resumable)
+# ----------------------------
+- name: Ensure aria2c is installed
+  apt:
+    name: aria2
+    state: present
+    update_cache: yes
+
+- name: Download Clonezilla Live ZIP with aria2c if not present
   shell: |
-    mkdir -p /srv/tftp/debian-live
-    cp -r /mnt/debian/live /srv/tftp/debian-live/
-    cp -r /mnt/debian/isolinux/* /srv/tftp/debian-live/
+    if [ ! -f /tmp/clonezilla-live.zip ]; then
+      aria2c -x 16 -s 16 -k 1M -o /tmp/clonezilla-live.zip https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip
+    fi
   args:
     executable: /bin/bash
+  changed_when: false
 
-- name: Unmount Debian Live ISO
-  mount:
-    path: /mnt/debian
-    state: unmounted
-
-
-# ----------------------------
-# Download and unpack Clonezilla Live
-# ----------------------------
-- name: Download Clonezilla Live ZIP (if not present)
-  get_url:
-    url: "https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip"
-    dest: /tmp/clonezilla-live.zip
-    mode: '0644'
-    # Skip download if file already exists
-    force: no
-  # Optional: still double-check
-  # creates: /tmp/clonezilla-live.zip
-
-- name: Extract Clonezilla Live (if not already extracted)
+- name: Extract Clonezilla
   unarchive:
     src: /tmp/clonezilla-live.zip
     dest: /srv/tftp/
     remote_src: yes
-    # Skip extraction if this file/folder exists
     creates: /srv/tftp/clonezilla-live-3.2.2-15-amd64
 
-
 # ----------------------------
-# Fix permissions for TFTP
-# ----------------------------
-- name: Ensure TFTP folder permissions
-  file:
-    path: /srv/tftp
-    recurse: yes
-    owner: nobody
-    group: nogroup
-    mode: '0755'
-
-# ----------------------------
-# Ensure PXE config directory exists
+# Create PXE config directory
 # ----------------------------
 - name: Create pxelinux.cfg directory
   file:
     path: /srv/tftp/pxelinux.cfg
     state: directory
-    owner: nobody
-    group: nogroup
     mode: '0755'
 
 # ----------------------------
-# PXE boot menu configuration
+# Create PXE default menu (empty for now)
+# It will be filled by debootstrap.yml
 # ----------------------------
-- name: Create PXE default menu for Debian Live XFCE
+- name: Create minimal PXE menu (placeholder)
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
+    mode: '0644'
     content: |
-      DEFAULT debianlive
-      PROMPT 0
-      TIMEOUT 50
-      MENU TITLE PXE Boot Menu
+      DEFAULT local
+      LABEL local
+        LOCALBOOT 0
 
-      LABEL debianlive
-        MENU LABEL Debian Live 13.2.0 XFCE
-        KERNEL debian-live/live/vmlinuz
-        APPEND initrd=debian-live/live/initrd.img boot=live components fetch=tftp://{{ pxe_ip.stdout }}/debian-live/live/filesystem.squashfs
-
-    
 # ----------------------------
 # Configure dnsmasq (DHCP + PXE)
 # ----------------------------
-- name: Backup original dnsmasq config
+- name: Backup dnsmasq.conf
   copy:
     src: /etc/dnsmasq.conf
     dest: /etc/dnsmasq.conf.bak
     remote_src: yes
     force: no
-
-- name: Remove old PXE configs
-  file:
-    path: /etc/dnsmasq.d/pxe.conf
-    state: absent
 
 - name: Configure dnsmasq for PXE
   copy:
@@ -213,54 +168,11 @@
       log-dhcp
 
 # ----------------------------
-# Service management
+# Restart dnsmasq
 # ----------------------------
-- name: Restart dnsmasq safely
+- name: Restart dnsmasq
   systemd:
     name: dnsmasq
     state: restarted
     enabled: yes
-
-- name: Wait for dnsmasq process to be active (TFTP readiness)
-  shell: pgrep -x dnsmasq
-  register: dnsmasq_pid
-  retries: 5
-  delay: 5
-  until: dnsmasq_pid.rc == 0
-  changed_when: false
-
-# -----------------------------------
-# Configure nginx to serve Debian files (faster than TFTP)
-# -----------------------------------
-- name: Install nginx for HTTP boot
-  apt:
-    name: nginx
-    state: present
-    update_cache: yes
-
-- name: Symlink Debian Live directory to nginx web root
-  file:
-    src: /srv/tftp/debian-live
-    dest: /var/www/html/debian-live
-    state: link
-    force: yes
-
-- name: Ensure nginx is running
-  systemd:
-    name: nginx
-    state: started
-    enabled: yes
-
-# -----------------------------------
-# Update PXE boot menu
-# -----------------------------------
-- name: Add Debian Live entry to PXE menu
-  blockinfile:
-    path: /srv/tftp/pxelinux.cfg/default
-    marker: "# {mark} DEBIAN-LIVE"
-    block: |
-      LABEL Debian Live XFCE
-          MENU LABEL Debian Live 13.1.0 XFCE (64-bit)
-          KERNEL debian-live/live/vmlinuz
-          APPEND initrd=debian-live/live/initrd.img boot=live components fetch=http://{{ ansible_default_ipv4.address }}/debian-live/live/filesystem.squashfs
 
