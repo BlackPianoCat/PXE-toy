@@ -1,6 +1,6 @@
 ---
 # ===========================
-# PXE + NFS-root Debian boot (no Debian Live)
+# PXE + NFS-root Debian boot (no Clonezilla)
 # ===========================
 
 # ----------------------------
@@ -22,9 +22,9 @@
   changed_when: false
 
 # ----------------------------
-# Install PXE and NFS packages
+# Install PXE, NFS, and utilities
 # ----------------------------
-- name: Install PXE, NFS, and Clonezilla dependencies
+- name: Install required packages
   apt:
     name:
       - dnsmasq
@@ -40,13 +40,16 @@
 # ----------------------------
 # Prepare TFTP root
 # ----------------------------
-- name: Create TFTP directory
+- name: Create TFTP directories
   file:
-    path: /srv/tftp
+    path: "{{ item }}"
     state: directory
     owner: nobody
     group: nogroup
     mode: '0755'
+  loop:
+    - /srv/tftp
+    - /srv/tftp/modules
 
 # ----------------------------
 # Copy PXE bootloader
@@ -58,6 +61,7 @@
     done
   register: pxelinux_path
   changed_when: false
+  failed_when: pxelinux_path.stdout == ""
 
 - name: Copy pxelinux.0
   copy:
@@ -67,64 +71,24 @@
     mode: '0644'
 
 # ----------------------------
-# Copy syslinux BIOS modules
+# Copy syslinux BIOS modules (must match pxelinux.0 version)
 # ----------------------------
-- name: Copy syslinux BIOS modules to TFTP
+- name: Copy syslinux BIOS modules
   shell: |
-    mkdir -p /srv/tftp/modules
+    # copy BIOS modules
     for d in /usr/lib/syslinux/modules/bios /usr/share/syslinux; do
-      if [ -d "$d" ]; then cp -a $d/* /srv/tftp/modules/; fi
+      if [ -d "$d" ]; then
+        cp -a $d/* /srv/tftp/modules/
+      fi
     done
-
-# ----------------------------
-# Download Debian Live XFCE ISO (for bootstrap use only)
-# ----------------------------
-- name: Create directories for Debian Live ISO
-  file:
-    path: "{{ item }}"
-    state: directory
-    mode: '0755'
-  loop:
-    - /srv/iso
-    - /mnt/debian
-
-- name: Download Debian Live XFCE ISO
-  get_url:
-    url: "https://cdimage.debian.org/cdimage/weekly-live-builds/amd64/iso-hybrid/debian-live-testing-amd64-xfce.iso"
-    dest: "/srv/iso/debian-live-amd64-xfce.iso"
-    mode: '0644'
-    force: no
-  register: debian_iso
-
-# (Not mounted, not used for booting. Only available if you want to extract pool packages later.)
-
-# ----------------------------
-# Download Clonezilla Live ZIP using aria2c (fast and resumable)
-# ----------------------------
-- name: Ensure aria2c is installed
-  apt:
-    name: aria2
-    state: present
-    update_cache: yes
-
-- name: Download Clonezilla Live ZIP with aria2c if not present
-  shell: |
-    if [ ! -f /tmp/clonezilla-live.zip ]; then
-      aria2c -x 16 -s 16 -k 1M -o /tmp/clonezilla-live.zip https://netcologne.dl.sourceforge.net/project/clonezilla/clonezilla_live_stable/3.2.2-15/clonezilla-live-3.2.2-15-amd64.zip
-    fi
+    # copy core .c32 files needed by pxelinux
+    cp -a /usr/lib/syslinux/*.c32 /srv/tftp/ 2>/dev/null || true
   args:
     executable: /bin/bash
-  changed_when: false
 
-- name: Extract Clonezilla
-  unarchive:
-    src: /tmp/clonezilla-live.zip
-    dest: /srv/tftp/
-    remote_src: yes
-    creates: /srv/tftp/clonezilla-live-3.2.2-15-amd64
 
 # ----------------------------
-# Create PXE config directory
+# Create PXE config directory and placeholder menu
 # ----------------------------
 - name: Create pxelinux.cfg directory
   file:
@@ -132,11 +96,7 @@
     state: directory
     mode: '0755'
 
-# ----------------------------
-# Create PXE default menu (empty for now)
-# It will be filled by debootstrap.yml
-# ----------------------------
-- name: Create minimal PXE menu (placeholder)
+- name: Create minimal PXE menu
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
     mode: '0644'
@@ -146,9 +106,9 @@
         LOCALBOOT 0
 
 # ----------------------------
-# Configure dnsmasq (DHCP + PXE)
+# Configure dnsmasq
 # ----------------------------
-- name: Backup dnsmasq.conf
+- name: Backup dnsmasq.conf if not already backed up
   copy:
     src: /etc/dnsmasq.conf
     dest: /etc/dnsmasq.conf.bak

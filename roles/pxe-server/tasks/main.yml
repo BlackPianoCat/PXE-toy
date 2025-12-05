@@ -8,5 +8,3 @@
 # 2. Bootstrap Debian rootfs for PXE clients
 - import_tasks: debootstrap.yml
 
-# 3. Network-setup
-- import_tasks: network_setup.yml

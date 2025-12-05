@@ -1,176 +1,187 @@
 ---
-# roles/pxe-server/tasks/debootstrap.yml
-# Fully bootstrap a PXE Debian image with updates, programs, and users
-# Includes detailed comments for clarity
+# PXE Debian boot using debootstrap and NFS root
+# Compatible with dnsmasq TFTP setup from setup.yml
 
 # ----------------------------
-# Ensure working directories exist
+# Detect PXE interface IP
 # ----------------------------
-- name: Ensure working directories exist
+- name: Detect PXE interface IP
+  shell: "ip -4 addr show dev {{ pxe_interface | default('eth1') }} | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}'"
+  register: pxe_ip
+  changed_when: false
+  failed_when: pxe_ip.stdout == ""
+
+- debug:
+    msg: "PXE server IP: '{{ pxe_ip.stdout }}'"
+
+# ----------------------------
+# Ensure host has internet
+# ----------------------------
+- name: Ensure DNS resolver is present
+  lineinfile:
+    path: /etc/resolv.conf
+    line: "nameserver 8.8.8.8"
+    state: present
+    create: yes
+
+- name: Wait until deb.debian.org is reachable
+  wait_for:
+    host: deb.debian.org
+    port: 80
+    timeout: 60
+
+# ----------------------------
+# Create directories for PXE root
+# ----------------------------
+- name: Create directories for PXE root
   file:
     path: "{{ item }}"
     state: directory
+    mode: '0755'
   loop:
-    - /srv/live-build/work       # temporary work directory for debootstrap operations
-    - /srv/live-build/pxe-root   # target root filesystem for PXE boot
+    - /srv/live-build/pxe-root
 
 # ----------------------------
-# Bootstrap minimal Debian system
+# Bootstrap minimal Debian
 # ----------------------------
-- name: Bootstrap minimal Debian system
+- name: Bootstrap Debian base system
   command: >
     debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
   args:
-    creates: /srv/live-build/pxe-root/bin/bash  # skip if already bootstrapped
+    creates: /srv/live-build/pxe-root/bin/bash
 
 # ----------------------------
-# Prepare essential virtual filesystems in PXE root
+# Copy resolv.conf and create sources.list
 # ----------------------------
-- name: Ensure /proc, /sys, /dev, /dev/pts exist in PXE root
-  file:
-    path: "{{ item }}"
-    state: directory
+- name: Copy resolv.conf into chroot
+  copy:
+    src: /etc/resolv.conf
+    dest: /srv/live-build/pxe-root/etc/resolv.conf
+
+- name: Create minimal sources.list in chroot
+  copy:
+    dest: /srv/live-build/pxe-root/etc/apt/sources.list
+    mode: '0644'
+    content: |
+      deb http://deb.debian.org/debian bookworm main contrib non-free
+      deb http://deb.debian.org/debian bookworm-updates main contrib non-free
+      deb http://security.debian.org/debian-security bookworm-security main contrib non-free
+
+# ----------------------------
+# Bind /tmp for apt inside chroot
+# ----------------------------
+- name: Bind /tmp inside chroot
+  mount:
+    path: /srv/live-build/pxe-root/tmp
+    src: /tmp
+    fstype: none
+    opts: bind
+    state: mounted
+
+# ----------------------------
+# Mount virtual filesystems inside chroot
+# ----------------------------
+- name: Mount virtual filesystems
+  block:
+    - mount: { path: /srv/live-build/pxe-root/proc, src: proc, fstype: proc, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/sys, src: sysfs, fstype: sysfs, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/dev, src: /dev, fstype: none, opts: bind, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
+
+# ----------------------------
+# Update package list inside chroot
+# ----------------------------
+- name: Update APT inside chroot
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update"
+
+# ----------------------------
+# Install essential PXE packages inside chroot (without tftpd-hpa)
+# ----------------------------
+- name: Install essential PXE packages inside chroot
+  command: chroot /srv/live-build/pxe-root /bin/bash -c \
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools sudo vim curl wget syslinux-common pxelinux"
+
+# ----------------------------
+# Clean apt cache inside chroot
+# ----------------------------
+- name: Clean apt cache inside chroot
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
+
+# ----------------------------
+# Create admin and standard users
+# ----------------------------
+- name: Ensure admin user blackpianocat exists
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c
+    "id -u blackpianocat >/dev/null 2>&1 || \
+     (useradd -m -s /bin/bash blackpianocat && \
+      echo 'blackpianocat:sebix4ever' | chpasswd && \
+      usermod -aG sudo blackpianocat)"
+
+- name: Ensure standard users exist
   loop:
-    - /srv/live-build/pxe-root/proc
-    - /srv/live-build/pxe-root/sys
-    - /srv/live-build/pxe-root/dev
-    - /srv/live-build/pxe-root/dev/pts
-
-- name: Mount /proc inside PXE root
-  mount:
-    path: /srv/live-build/pxe-root/proc
-    src: proc
-    fstype: proc
-    state: mounted
-
-- name: Mount /sys inside PXE root
-  mount:
-    path: /srv/live-build/pxe-root/sys
-    src: sysfs
-    fstype: sysfs
-    state: mounted
-
-- name: Bind-mount /dev inside PXE root
-  mount:
-    path: /srv/live-build/pxe-root/dev
-    src: /dev
-    fstype: none
-    opts: bind
-    state: mounted
-
-- name: Bind-mount /dev/pts inside PXE root
-  mount:
-    path: /srv/live-build/pxe-root/dev/pts
-    src: /dev/pts
-    fstype: none
-    opts: bind
-    state: mounted
-
-# ----------------------------
-# Update system inside chroot
-# ----------------------------
-- name: Update apt and upgrade inside PXE image
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
-
-# ----------------------------
-# Install essential Linux tools
-# ----------------------------
-- name: Install essential Linux tools
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install sudo vim curl wget net-tools htop tree"
-
-# ----------------------------
-# Create users inside PXE image (idempotent)
-# ----------------------------
-- name: Create users without passwords if not exists
-  vars:
-    users_no_pass:
-      - blackpianocat
-      - whitesexyorca
-  loop: "{{ users_no_pass }}"
-  loop_control:
-    loop_var: user
+    - kotek-1
+    - kotek-2
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
-    "id -u {{ user }} || useradd -m -s /bin/bash {{ user }}"
-
-- name: Create users with predefined passwords if not exists
-  vars:
-    users_passwords:
-      - { name: "whitesmellyracoon", password: "racoonsfart" }
-      - { name: "admin", password: "admin_rocks" }
-  loop: "{{ users_passwords }}"
-  loop_control:
-    loop_var: user
-  command: >
-    chroot /srv/live-build/pxe-root /bin/bash -c
-    "id -u {{ user.name }} || (useradd -m -s /bin/bash {{ user.name }} && echo '{{ user.name }}:{{ user.password }}' | chpasswd)"
-
-- name: Create user redhandsomegorilla forcing password change on first login if not exists
-  command: >
-    chroot /srv/live-build/pxe-root /bin/bash -c
-    "id -u redhandsomegorilla || (useradd -m -s /bin/bash redhandsomegorilla && passwd -d redhandsomegorilla && chage -d 0 redhandsomegorilla)"
+    "id -u {{ item }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ item }}"
 
 # ----------------------------
 # Configure sudoers
 # ----------------------------
-- name: Configure sudoers for admin and blackpianocat
-  block:
-    - copy:
-        dest: /srv/live-build/pxe-root/etc/sudoers.d/admin
-        mode: '0440'
-        content: |
-          admin ALL=(ALL) ALL
-    - copy:
-        dest: /srv/live-build/pxe-root/etc/sudoers.d/blackpianocat
-        mode: '0440'
-        content: |
-          blackpianocat ALL=(ALL) NOPASSWD: ALL
+- name: Give admin passwordless sudo
+  copy:
+    dest: /srv/live-build/pxe-root/etc/sudoers.d/blackpianocat
+    mode: '0440'
+    content: |
+      blackpianocat ALL=(ALL) NOPASSWD: ALL
 
 # ----------------------------
-# Clean up apt cache inside chroot
+# Add NFS support to initramfs
 # ----------------------------
-- name: Clean apt cache inside PXE image
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
-
-# ----------------------------
-# Unmount virtual filesystems after setup
-# ----------------------------
-- name: Unmount virtual filesystems
-  block:
-    - command: umount /srv/live-build/pxe-root/proc
-      ignore_errors: yes
-    - command: umount /srv/live-build/pxe-root/sys
-      ignore_errors: yes
-    - command: umount /srv/live-build/pxe-root/dev/pts
-      ignore_errors: yes
-    - command: umount /srv/live-build/pxe-root/dev
-      ignore_errors: yes
-
-# ----------------------------
-# Install kernel inside chroot
-# ----------------------------
-- name: Install kernel inside chroot
+- name: Add NFS support to initramfs
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
-    "DEBIAN_FRONTEND=noninteractive apt-get -y install linux-image-amd64"
+    "echo -e 'nfs\nnfsv3\nnfsv4\next4' >> /etc/initramfs-tools/modules && update-initramfs -u -k all"
 
 # ----------------------------
-# Copy kernel and initrd to TFTP directory
+# Copy kernel/initrd to TFTP for PXE
 # ----------------------------
-- name: Copy kernel to TFTP
+- name: Copy kernel and initrd images to TFTP
   shell: |
     cp /srv/live-build/pxe-root/boot/vmlinuz-* /srv/tftp/vmlinuz
-  args:
-    executable: /bin/bash
-
-- name: Copy initrd to TFTP
-  shell: |
     cp /srv/live-build/pxe-root/boot/initrd.img-* /srv/tftp/initrd.img
   args:
     executable: /bin/bash
 
+- name: Make TFTP files world-readable
+  file:
+    path: "{{ item }}"
+    mode: '0644'
+  loop:
+    - /srv/tftp/vmlinuz
+    - /srv/tftp/initrd.img
+
 # ----------------------------
-# Configure NFS export for PXE root
+# Configure PXE boot menu for NFS root
+# ----------------------------
+- name: Configure PXE menu
+  copy:
+    dest: /srv/tftp/pxelinux.cfg/default
+    mode: '0644'
+    content: |
+      DEFAULT debian
+      PROMPT 0
+      TIMEOUT 50
+
+      LABEL debian
+        MENU LABEL Boot Debian PXE
+        KERNEL vmlinuz
+        INITRD initrd.img
+        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp
+
+# ----------------------------
+# Export PXE root via NFS
 # ----------------------------
 - name: Ensure /etc/exports.d exists
   file:
@@ -178,43 +189,34 @@
     state: directory
     mode: '0755'
 
-- name: Configure NFS export for PXE root
+# Then configure the NFS export
+- name: Configure NFS export
   copy:
     dest: /etc/exports.d/pxe-root.exports
     mode: '0644'
-    content: |
-      /srv/live-build/pxe-root {{ pxe_ip.stdout }}/24(rw,no_root_squash,no_subtree_check)
-      # use PXE interface IP to allow clients on correct subnet to mount
+    content: "/srv/live-build/pxe-root {{ pxe_ip.stdout }}/24(rw,no_root_squash,no_subtree_check)"
 
 - name: Reload NFS exports
   command: exportfs -ra
-  # ensures NFS exports are active and visible to clients
+
+- name: Ensure NFS server is running
+  service:
+    name: nfs-kernel-server
+    state: started
+    enabled: yes
 
 # ----------------------------
-# Include NFS and network modules in initrd
+# Unmount chroot filesystems
 # ----------------------------
-- name: Ensure NFS and network modules included in initrd
-  command: >
-    chroot /srv/live-build/pxe-root /bin/bash -c
-    "echo 'nfs nfsd nfsv3 nfsv4 ext4 inet' >> /etc/initramfs-tools/modules && update-initramfs -u -k all"
-  # necessary for PXE boot with NFS root
+- name: Unmount virtual filesystems
+  block:
+    - shell: umount /srv/live-build/pxe-root/dev/pts || true
+    - shell: umount /srv/live-build/pxe-root/dev || true
+    - shell: umount /srv/live-build/pxe-root/sys || true
+    - shell: umount /srv/live-build/pxe-root/proc || true
+  ignore_errors: yes
 
-# ----------------------------
-# PXE menu entry for bootstrapped Debian
-# ----------------------------
-- name: Create PXE boot menu entry for bootstrapped Debian
-  copy:
-    dest: /srv/tftp/pxelinux.cfg/default
-    mode: '0644'
-    content: |
-      DEFAULT debianpxe
-      PROMPT 0
-      TIMEOUT 50
-
-      LABEL debianpxe
-        MENU LABEL Debian PXE boot (debootstrap)
-        KERNEL vmlinuz
-        INITRD initrd.img
-        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp
-        # PXE client mounts the NFS root from correct PXE interface IP
+- name: PXE boot image ready
+  debug:
+    msg: "PXE root is bootable. Clients can now boot via network."
 
