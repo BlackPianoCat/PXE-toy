@@ -170,7 +170,7 @@
     for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
       [ -d "$dir" ] || continue
       for f in "$dir"/*.c32; do
-        [ -f "$f" ] && cp -f "$f" /srv/tftp/
+        [ -f "$f" ] && cp -f "$f" /srv/tftp/ || true
       done
     done
   args:
@@ -220,15 +220,15 @@
 # ----------------------------
 # NFS exports
 # ----------------------------
-- name: Compute PXE network
-  set_fact:
-    pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
-
 - name: Ensure /etc/exports.d exists
   file:
     path: /etc/exports.d
     state: directory
     mode: '0755'
+
+- name: Compute PXE network
+  set_fact:
+    pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
 
 - name: Configure NFS export for PXE root
   copy:
@@ -244,6 +244,13 @@
     name: nfs-kernel-server
     state: started
     enabled: yes
+
+- name: Wait until NFS export is ready
+  shell: "showmount -e {{ pxe_ip.stdout }}"
+  register: nfs_ready
+  retries: 5
+  delay: 2
+  until: nfs_ready.rc == 0
 
 # ----------------------------
 # Restart dnsmasq
