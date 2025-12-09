@@ -86,25 +86,34 @@
     executable: /bin/bash
 
 # ----------------------------
-# Create PXE config directory and placeholder menu
+# Create PXE config directory
 # ----------------------------
-- name: Create pxelinux.cfg directory
+- name: Ensure pxelinux.cfg directory exists
   file:
     path: /srv/tftp/pxelinux.cfg
     state: directory
+    owner: nobody
+    group: nogroup
     mode: '0755'
 
-- name: Create minimal PXE menu
+# ----------------------------
+# Create real PXE boot menu
+# ----------------------------
+- name: Install proper PXE boot menu
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
+    owner: nobody
+    group: nogroup
     mode: '0644'
     content: |
-      DEFAULT local
+      DEFAULT debian
       PROMPT 0
-      TIMEOUT 50
+      TIMEOUT 30
 
-      LABEL local
-        LOCALBOOT 0
+      LABEL debian
+        KERNEL vmlinuz
+        INITRD initrd.img
+        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/nfs/debian rw ip=dhcp
 
 # ----------------------------
 # Configure dnsmasq for PXE
