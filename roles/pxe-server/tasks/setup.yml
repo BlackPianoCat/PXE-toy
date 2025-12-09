@@ -4,9 +4,9 @@
 # ===========================
 
 # ----------------------------
-# Detect PXE interface
+# Detect PXE interface (host-only adapter)
 # ----------------------------
-- name: Detect PXE interface (host-only adapter)
+- name: Detect PXE interface
   shell: ip -o -4 addr show | awk '/192\.168\.56\./ {print $2; exit}'
   register: iface_result
   changed_when: false
@@ -20,6 +20,9 @@
   shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {gsub("/.*","",$2); print $2}'
   register: pxe_ip
   changed_when: false
+
+- debug:
+    msg: "PXE interface: {{ pxe_interface }}, IP: {{ pxe_ip.stdout }}"
 
 # ----------------------------
 # Install PXE, NFS, and utilities
@@ -63,7 +66,7 @@
   changed_when: false
   failed_when: pxelinux_path.stdout == ""
 
-- name: Copy pxelinux.0
+- name: Copy pxelinux.0 to TFTP
   copy:
     remote_src: yes
     src: "{{ pxelinux_path.stdout }}"
@@ -71,21 +74,16 @@
     mode: '0644'
 
 # ----------------------------
-# Copy syslinux BIOS modules (must match pxelinux.0 version)
+# Copy syslinux BIOS modules
 # ----------------------------
 - name: Copy syslinux BIOS modules
   shell: |
-    # copy BIOS modules
     for d in /usr/lib/syslinux/modules/bios /usr/share/syslinux; do
-      if [ -d "$d" ]; then
-        cp -a $d/* /srv/tftp/modules/
-      fi
+      if [ -d "$d" ]; then cp -a $d/* /srv/tftp/modules/; fi
     done
-    # copy core .c32 files needed by pxelinux
     cp -a /usr/lib/syslinux/*.c32 /srv/tftp/ 2>/dev/null || true
   args:
     executable: /bin/bash
-
 
 # ----------------------------
 # Create PXE config directory and placeholder menu
@@ -102,11 +100,14 @@
     mode: '0644'
     content: |
       DEFAULT local
+      PROMPT 0
+      TIMEOUT 50
+
       LABEL local
         LOCALBOOT 0
 
 # ----------------------------
-# Configure dnsmasq
+# Configure dnsmasq for PXE
 # ----------------------------
 - name: Backup dnsmasq.conf if not already backed up
   copy:
@@ -115,17 +116,21 @@
     remote_src: yes
     force: no
 
-- name: Configure dnsmasq for PXE
+- name: Configure dnsmasq PXE
   copy:
     dest: /etc/dnsmasq.d/pxe.conf
+    mode: '0644'
     content: |
       interface={{ pxe_interface }}
       bind-interfaces
       dhcp-range=192.168.56.100,192.168.56.200,12h
       dhcp-boot=pxelinux.0
+      pxe-service=x86PC,"PXE Boot",pxelinux.0
       enable-tftp
       tftp-root=/srv/tftp
       log-dhcp
+      # Force next-server to PXE server IP for multi-network clients
+      dhcp-option=66,{{ pxe_ip.stdout }}
 
 # ----------------------------
 # Restart dnsmasq

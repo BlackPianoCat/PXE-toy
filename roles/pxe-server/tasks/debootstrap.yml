@@ -1,6 +1,6 @@
 ---
 # PXE Debian boot using debootstrap and NFS root
-# Compatible with dnsmasq TFTP setup from setup.yml
+# Fully corrected for TFTP + NFS PXE boot
 
 # ----------------------------
 # Detect PXE interface IP
@@ -31,15 +31,18 @@
     timeout: 60
 
 # ----------------------------
-# Create directories for PXE root
+# Create directories for PXE root and TFTP
 # ----------------------------
-- name: Create directories for PXE root
+- name: Create required directories
   file:
     path: "{{ item }}"
     state: directory
     mode: '0755'
   loop:
     - /srv/live-build/pxe-root
+    - /srv/tftp
+    - /srv/tftp/modules
+    - /srv/tftp/pxelinux.cfg
 
 # ----------------------------
 # Bootstrap minimal Debian
@@ -66,9 +69,8 @@
       deb http://deb.debian.org/debian bookworm main contrib non-free
       deb http://deb.debian.org/debian bookworm-updates main contrib non-free
       deb http://security.debian.org/debian-security bookworm-security main contrib non-free
-
 # ----------------------------
-# Bind /tmp for apt inside chroot
+# Mount virtual filesystems (before apt)
 # ----------------------------
 - name: Bind /tmp inside chroot
   mount:
@@ -78,10 +80,7 @@
     opts: bind
     state: mounted
 
-# ----------------------------
-# Mount virtual filesystems inside chroot
-# ----------------------------
-- name: Mount virtual filesystems
+- name: Mount virtual filesystems inside chroot
   block:
     - mount: { path: /srv/live-build/pxe-root/proc, src: proc, fstype: proc, state: mounted }
     - mount: { path: /srv/live-build/pxe-root/sys, src: sysfs, fstype: sysfs, state: mounted }
@@ -89,21 +88,26 @@
     - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
 
 # ----------------------------
-# Update package list inside chroot
+# Update package lists inside chroot
 # ----------------------------
-- name: Update APT inside chroot
+- name: Update apt inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update"
+  environment:
+    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
+  register: apt_update
+  failed_when: apt_update.rc != 0
 
 # ----------------------------
-# Install essential PXE packages inside chroot (without tftpd-hpa)
+# Install essential packages inside chroot
 # ----------------------------
 - name: Install essential PXE packages inside chroot
-  command: chroot /srv/live-build/pxe-root /bin/bash -c \
-    "DEBIAN_FRONTEND=noninteractive apt-get install -y initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools sudo vim curl wget syslinux-common pxelinux"
+  command: >
+    chroot /srv/live-build/pxe-root /bin/bash -c "DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools sudo vim curl wget syslinux-common pxelinux"
+  environment:
+    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
 
-# ----------------------------
-# Clean apt cache inside chroot
-# ----------------------------
+
 - name: Clean apt cache inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
 
@@ -126,9 +130,6 @@
     chroot /srv/live-build/pxe-root /bin/bash -c
     "id -u {{ item }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ item }}"
 
-# ----------------------------
-# Configure sudoers
-# ----------------------------
 - name: Give admin passwordless sudo
   copy:
     dest: /srv/live-build/pxe-root/etc/sudoers.d/blackpianocat
@@ -145,8 +146,33 @@
     "echo -e 'nfs\nnfsv3\nnfsv4\next4' >> /etc/initramfs-tools/modules && update-initramfs -u -k all"
 
 # ----------------------------
-# Copy kernel/initrd to TFTP for PXE
+# Copy PXE bootloader and kernel/initrd
 # ----------------------------
+- name: Find pxelinux.0
+  shell: |
+    for d in /usr/lib/PXELINUX /usr/lib/syslinux /usr/share/syslinux /usr/lib/syslinux/modules/bios; do
+      if [ -f "$d/pxelinux.0" ]; then echo "$d/pxelinux.0"; exit 0; fi
+    done
+  register: pxelinux_path
+  changed_when: false
+  failed_when: pxelinux_path.stdout == ""
+
+- name: Copy pxelinux.0
+  copy:
+    remote_src: yes
+    src: "{{ pxelinux_path.stdout }}"
+    dest: /srv/tftp/pxelinux.0
+    mode: '0644'
+
+# Copy core syslinux .c32 modules needed by pxelinux
+- name: Copy syslinux core .c32 files to TFTP
+  shell: |
+    for f in /usr/lib/syslinux/*.c32 /usr/lib/PXELINUX/*.c32 /usr/lib/syslinux/modules/bios/*.c32; do
+      if [ -f "$f" ]; then cp "$f" /srv/tftp/; fi
+    done
+  args:
+    executable: /bin/bash
+
 - name: Copy kernel and initrd images to TFTP
   shell: |
     cp /srv/live-build/pxe-root/boot/vmlinuz-* /srv/tftp/vmlinuz
@@ -154,18 +180,19 @@
   args:
     executable: /bin/bash
 
-- name: Make TFTP files world-readable
+- name: Set permissions for TFTP files
   file:
     path: "{{ item }}"
     mode: '0644'
   loop:
     - /srv/tftp/vmlinuz
     - /srv/tftp/initrd.img
+    - /srv/tftp/pxelinux.0
 
 # ----------------------------
-# Configure PXE boot menu for NFS root
+# Configure PXE menu
 # ----------------------------
-- name: Configure PXE menu
+- name: Configure PXE menu for NFS root
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
     mode: '0644'
@@ -178,10 +205,10 @@
         MENU LABEL Boot Debian PXE
         KERNEL vmlinuz
         INITRD initrd.img
-        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp
+        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp nfsrootwait
 
 # ----------------------------
-# Export PXE root via NFS
+# Export NFS root
 # ----------------------------
 - name: Ensure /etc/exports.d exists
   file:
@@ -189,7 +216,6 @@
     state: directory
     mode: '0755'
 
-# Then configure the NFS export
 - name: Configure NFS export
   copy:
     dest: /etc/exports.d/pxe-root.exports
@@ -206,7 +232,7 @@
     enabled: yes
 
 # ----------------------------
-# Unmount chroot filesystems
+# Cleanup: unmount chroot filesystems
 # ----------------------------
 - name: Unmount virtual filesystems
   block:
