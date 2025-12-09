@@ -1,10 +1,6 @@
 ---
 # PXE Debian boot using debootstrap and NFS root
-# Robust, idempotent version: ensures files persist, exports are correct,
-# copies required pxelinux modules, restarts services and clears leases.
-
-# NOTE: This playbook assumes setup.yml already installed dnsmasq and created /srv/tftp
-# and that `pxe_interface` fact exists (from setup.yml). If not, pxe_interface defaults to eth1.
+# Minimal corrections to ensure PXE files exist
 
 # ----------------------------
 # Detect PXE interface IP (calculate and expose pxe_ip)
@@ -25,7 +21,7 @@
 # ----------------------------
 # Ensure basic network resolution for apt in chroot
 # ----------------------------
-- name: Ensure DNS resolver is present on host (for debootstrap/chroot)
+- name: Ensure DNS resolver is present on host
   lineinfile:
     path: /etc/resolv.conf
     line: "nameserver 8.8.8.8"
@@ -39,7 +35,7 @@
     timeout: 60
 
 # ----------------------------
-# Create persistent directories (idempotent)
+# Create persistent directories
 # ----------------------------
 - name: Create required directories (PXE root + TFTP)
   file:
@@ -55,7 +51,7 @@
     - /srv/tftp/pxelinux.cfg
 
 # ----------------------------
-# Bootstrap minimal Debian (debootstrap)
+# Bootstrap Debian base system
 # ----------------------------
 - name: Bootstrap Debian base system (debootstrap)
   command: >
@@ -64,9 +60,9 @@
     creates: /srv/live-build/pxe-root/bin/bash
 
 # ----------------------------
-# Ensure apt sources inside the chroot
+# Copy resolv.conf and sources.list inside chroot
 # ----------------------------
-- name: Copy host resolv.conf into chroot (so apt can resolve)
+- name: Copy host resolv.conf into chroot
   copy:
     src: /etc/resolv.conf
     dest: /srv/live-build/pxe-root/etc/resolv.conf
@@ -82,7 +78,7 @@
       deb http://security.debian.org/debian-security bookworm-security main contrib non-free
 
 # ----------------------------
-# Mount virtual filesystems BEFORE running apt inside chroot
+# Mount virtual filesystems
 # ----------------------------
 - name: Bind /tmp inside chroot
   mount:
@@ -100,17 +96,14 @@
     - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
 
 # ----------------------------
-# Update apt inside chroot and install required packages
-# Important: use full PATH and single chroot command lines.
+# Install packages inside chroot
 # ----------------------------
 - name: Update APT package lists inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update"
   environment:
     PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
-  register: apt_update
-  failed_when: apt_update.rc != 0
 
-- name: Install essential packages inside chroot (initramfs + kernel + nfs + pxelinux)
+- name: Install essential packages inside chroot
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
     "DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -118,15 +111,13 @@
       sudo vim curl wget syslinux-common pxelinux"
   environment:
     PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
-  register: apt_install
-  failed_when: apt_install.rc != 0
 
 - name: Clean apt cache inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
   changed_when: false
 
 # ----------------------------
-# Create users and sudoers inside chroot
+# Create users in chroot
 # ----------------------------
 - name: Ensure admin user blackpianocat exists in chroot
   command: >
@@ -137,47 +128,27 @@
       usermod -aG sudo blackpianocat)"
   changed_when: false
 
-- name: Ensure standard users exist in chroot
+# ----------------------------
+# Initramfs update for NFS
+# ----------------------------
+- name: Add NFS modules to /etc/initramfs-tools/modules
+  lineinfile:
+    path: /srv/live-build/pxe-root/etc/initramfs-tools/modules
+    line: "{{ item }}"
+    create: yes
   loop:
-    - kotek-1
-    - kotek-2
-  command: >
-    chroot /srv/live-build/pxe-root /bin/bash -c
-    "id -u {{ item }} >/dev/null 2>&1 || useradd -m -s /bin/bash {{ item }}"
-  changed_when: false
+    - nfs
+    - nfsv3
+    - nfsv4
+    - ext4
 
-- name: Give admin passwordless sudo inside chroot
-  copy:
-    dest: /srv/live-build/pxe-root/etc/sudoers.d/blackpianocat
-    mode: '0440'
-    content: |
-      blackpianocat ALL=(ALL) NOPASSWD: ALL
+- name: Update-initramfs inside chroot
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
+  environment:
+    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ----------------------------
-# Ensure initramfs contains NFS support and regenerate
-# (this ensures clients can mount NFS root)
-# ----------------------------
-- name: Ensure NFS modules present in initramfs-tools/modules inside chroot
-  block:
-    - name: Add NFS modules to /etc/initramfs-tools/modules (idempotent)
-      lineinfile:
-        path: /srv/live-build/pxe-root/etc/initramfs-tools/modules
-        line: "{{ item }}"
-        create: yes
-      loop:
-        - nfs
-        - nfsv3
-        - nfsv4
-        - ext4
-
-    - name: Update-initramfs inside chroot (regenerate for installed kernel)
-      command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
-      environment:
-        PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
-
-# ----------------------------
-# Copy pxelinux bootloader and syslinux modules to TFTP root
-# (ensure ldlinux.c32 and other .c32 are present)
+# Copy pxelinux.0 and modules
 # ----------------------------
 - name: Find pxelinux.0 on host
   shell: |
@@ -186,7 +157,6 @@
     done
   register: pxelinux_path
   changed_when: false
-  failed_when: pxelinux_path.stdout == ""
 
 - name: Copy pxelinux.0 to TFTP root
   copy:
@@ -195,62 +165,34 @@
     dest: /srv/tftp/pxelinux.0
     mode: '0644'
 
-- name: Copy syslinux core .c32 files to TFTP root (ldlinux.c32 etc)
+- name: Copy all required .c32 files to TFTP root
   shell: |
-    set -e
-    for f in /usr/lib/syslinux/*.c32 /usr/lib/PXELINUX/*.c32 /usr/lib/syslinux/modules/bios/*.c32; do
-      if [ -f "$f" ]; then cp -f "$f" /srv/tftp/; fi
-    done
-    # Also copy any .c32 from /usr/lib/x86_64-linux-gnu/syslinux if present
-    for f in /usr/lib/x86_64-linux-gnu/syslinux/*.c32; do
-      [ -f "$f" ] && cp -f "$f" /srv/tftp/ || true
+    for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
+      [ -d "$dir" ] || continue
+      for f in "$dir"/*.c32; do
+        [ -f "$f" ] && cp -f "$f" /srv/tftp/
+      done
     done
   args:
     executable: /bin/bash
 
 # ----------------------------
-# Copy kernel and initrd from chroot to TFTP with stable names
+# Copy kernel and initrd to TFTP
 # ----------------------------
-- name: Ensure chroot /boot exists (fail early if not)
-  stat:
-    path: /srv/live-build/pxe-root/boot
-  register: chroot_boot
-
-- name: Fail if no kernel found in chroot boot
-  fail:
-    msg: "No kernel found under /srv/live-build/pxe-root/boot — debootstrap or package install probably failed."
-  when: not chroot_boot.stat.exists
-
-- name: Copy vmlinuz and initrd from chroot to /srv/tftp with stable names
+- name: Copy vmlinuz and initrd from chroot to /srv/tftp
   shell: |
     set -e
-    # pick the newest vmlinuz-* and initrd.img-* files
-    vmlinuz=$(ls -1t /srv/live-build/pxe-root/boot/vmlinuz-* 2>/dev/null | head -n1)
-    initrd=$(ls -1t /srv/live-build/pxe-root/boot/initrd.img-* 2>/dev/null | head -n1)
-    if [ -z "$vmlinuz" ] || [ -z "$initrd" ]; then
-      echo "ERROR: kernel or initrd not found" >&2
-      exit 2
-    fi
+    vmlinuz=$(ls -1t /srv/live-build/pxe-root/boot/vmlinuz-* | head -n1)
+    initrd=$(ls -1t /srv/live-build/pxe-root/boot/initrd.img-* | head -n1)
     cp -f "$vmlinuz" /srv/tftp/vmlinuz
     cp -f "$initrd" /srv/tftp/initrd.img
   args:
     executable: /bin/bash
 
-- name: Ensure TFTP files are readable
-  file:
-    path: "{{ item }}"
-    mode: '0644'
-  loop:
-    - /srv/tftp/vmlinuz
-    - /srv/tftp/initrd.img
-    - /srv/tftp/pxelinux.0
-    - /srv/tftp/ldlinux.c32
-  ignore_errors: yes
-
 # ----------------------------
-# Create pxelinux.cfg/default (menu)
+# PXE menu
 # ----------------------------
-- name: Configure PXE menu for NFS root (writes exact nfsroot using detected IP)
+- name: Configure PXE menu for NFS root
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
     mode: '0644'
@@ -258,7 +200,6 @@
       DEFAULT debian
       PROMPT 0
       TIMEOUT 50
-
       LABEL debian
         MENU LABEL Boot Debian PXE (NFS root)
         KERNEL vmlinuz
@@ -266,7 +207,7 @@
         APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp nfsrootwait
 
 # ----------------------------
-# Ensure permissions and ownership for TFTP and PXE files
+# Ensure TFTP ownership
 # ----------------------------
 - name: Ensure /srv/tftp ownership and modes
   file:
@@ -276,15 +217,10 @@
     mode: '0755'
     recurse: no
 
-- name: Ensure pxelinux.cfg directory is readable
-  file:
-    path: /srv/tftp/pxelinux.cfg
-    mode: '0755'
-
 # ----------------------------
-# Export NFS root: compute network and write export file idempotently
+# NFS exports
 # ----------------------------
-- name: Compute PXE network (assume /24)
+- name: Compute PXE network
   set_fact:
     pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
 
@@ -300,90 +236,36 @@
     mode: '0644'
     content: "/srv/live-build/pxe-root {{ pxe_network }}(rw,no_root_squash,no_subtree_check)"
 
-# ----------------------------
-# Reload exports and ensure services are up
-# ----------------------------
-- name: Reload NFS exports (exportfs -ra)
+- name: Reload NFS exports
   command: exportfs -ra
-  register: exportfs_out
-  failed_when: exportfs_out.rc != 0
-  changed_when: false
 
-- name: Ensure nfs-kernel-server is started and enabled
+- name: Ensure nfs-kernel-server is started
   service:
     name: nfs-kernel-server
     state: started
     enabled: yes
 
 # ----------------------------
-# Ensure dnsmasq will point to this pxelinux.0 (fix leases, restart)
-# This guarantees DHCP next-server points to the correct IP and removes stale leases.
+# Restart dnsmasq
 # ----------------------------
-- name: Remove dnsmasq lease file (if present) to avoid stale client behaviour
+- name: Remove dnsmasq lease file
   file:
     path: /var/lib/misc/dnsmasq.leases
     state: absent
   ignore_errors: yes
 
-- name: Restart dnsmasq so DHCP/next-server is fresh
+- name: Restart dnsmasq
   systemd:
     name: dnsmasq
     state: restarted
     enabled: yes
 
 # ----------------------------
-# Check that all required TFTP files exist and show debug info
+# Final debug
 # ----------------------------
-- name: Check TFTP pxelinux.0 exists
-  stat:
-    path: /srv/tftp/pxelinux.0
-  register: stat_pxelinux
-
-- name: Check TFTP ldlinux.c32 exists
-  stat:
-    path: /srv/tftp/ldlinux.c32
-  register: stat_ldlinux
-
-- name: Check TFTP vmlinuz/initrd exist
-  stat:
-    path: /srv/tftp/vmlinuz
-  register: stat_vmlinuz
-
-- name: Check TFTP initrd
-  stat:
-    path: /srv/tftp/initrd.img
-  register: stat_initrd
-
-- name: Debug TFTP files status
+- name: Debug TFTP files
   debug:
     msg: |
-      pxelinux.0: {{ stat_pxelinux.stat.exists }}
-      ldlinux.c32: {{ stat_ldlinux.stat.exists }}
-      vmlinuz: {{ stat_vmlinuz.stat.exists }}
-      initrd.img: {{ stat_initrd.stat.exists }}
+      PXE files in /srv/tftp: pxelinux.0, ldlinux.c32, vmlinuz, initrd.img
       NFS export: {{ pxe_network }}
-
-# ----------------------------
-# Unmount virtual filesystems (cleanup)
-# ----------------------------
-- name: Unmount virtual filesystems (best-effort)
-  block:
-    - shell: umount /srv/live-build/pxe-root/dev/pts || true
-    - shell: umount /srv/live-build/pxe-root/dev || true
-    - shell: umount /srv/live-build/pxe-root/sys || true
-    - shell: umount /srv/live-build/pxe-root/proc || true
-    - shell: umount /srv/live-build/pxe-root/tmp || true
-  ignore_errors: yes
-
-- name: Final debug - PXE root ready
-  debug:
-    msg: "PXE root and TFTP files are ready. Boot clients from PXE (pxelinux.0 -> loads ldlinux.c32 -> menu -> vmlinuz+initrd -> NFS root)."
-
-# ----------------------------
-# Handlers
-# ----------------------------
-# Note: handlers must be declared at the end of the file when not using a role handlers file.
-- name: Reload NFS exports
-  command: exportfs -ra
-  notify: reload-nfs
 

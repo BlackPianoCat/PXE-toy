@@ -1,9 +1,7 @@
 #!/bin/bash
-
-# ----------------------------
-# PXE Client Automation Script
-# ----------------------------
-# Works with VirtualBox on Debian
+# =======================================
+# PXE Client Automation Script for VirtualBox
+# =======================================
 # Flags:
 #   -c | --create  -> create VMs
 #   -d | --destroy -> destroy VMs
@@ -12,102 +10,101 @@
 
 VM_PREFIX="pxe-client"
 VM_COUNT=3
-HOST_ONLY_IP="192.168.56.1"
-NET_MASK="255.255.255.0"
+HOST_ONLY_NET="vboxnet0"   # PXE network
+NAT_NET=true                # set NAT NIC for internet
+VM_MEMORY=4096
+VM_CPUS=2
+DISK_SIZE=10240             # in MB
 
-# ----------------------------
-# Determine action
-# ----------------------------
 ACTION=""
-if [[ "$1" == "-c" || "$1" == "--create" ]]; then
-    ACTION="create"
-elif [[ "$1" == "-d" || "$1" == "--destroy" ]]; then
-    ACTION="destroy"
-elif [[ "$1" == "-r" || "$1" == "--run" ]]; then
-    ACTION="run"
-elif [[ "$1" == "-cr" ]]; then
-    ACTION="create_run"
-else
-    echo "Usage: $0 [-c|--create | -d|--destroy | -r|--run | -cr]"
-    exit 1
-fi
+case "$1" in
+  -c|--create) ACTION="create" ;;
+  -d|--destroy) ACTION="destroy" ;;
+  -r|--run) ACTION="run" ;;
+  -cr) ACTION="create_run" ;;
+  *) echo "Usage: $0 [-c|--create | -d|--destroy | -r|--run | -cr]"; exit 1 ;;
+esac
 
 # ----------------------------
 # Destroy VMs
 # ----------------------------
 if [[ "$ACTION" == "destroy" ]]; then
-    for i in $(seq 1 $VM_COUNT); do
-        VM_NAME="${VM_PREFIX}${i}"
-        if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
-            echo "Destroying VM $VM_NAME..."
-            VBoxManage controlvm "$VM_NAME" poweroff &>/dev/null || true
-            VBoxManage unregistervm "$VM_NAME" --delete
-        else
-            echo "VM $VM_NAME does not exist, skipping..."
-        fi
-    done
-    echo "Done destroying VMs."
-    exit 0
+  for i in $(seq 1 $VM_COUNT); do
+    VM_NAME="${VM_PREFIX}${i}"
+    if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
+      VBoxManage controlvm "$VM_NAME" poweroff &>/dev/null || true
+      VBoxManage unregistervm "$VM_NAME" --delete
+      echo "[DESTROYED] $VM_NAME"
+    fi
+  done
+  exit 0
 fi
-
-# ----------------------------
-# Ensure host-only network exists
-# ----------------------------
-NET_NAME=$(VBoxManage list hostonlyifs | awk '/Name:/ {print $2}' | head -n1)
-if [[ -z "$NET_NAME" ]]; then
-    echo "Creating host-only network..."
-    NET_NAME=$(VBoxManage hostonlyif create | awk -F': ' '{print $2}')
-    VBoxManage hostonlyif ipconfig "$NET_NAME" --ip $HOST_ONLY_IP --netmask $NET_MASK
-fi
-echo "Using host-only network: $NET_NAME"
 
 # ----------------------------
 # Create VMs
 # ----------------------------
 if [[ "$ACTION" == "create" || "$ACTION" == "create_run" ]]; then
-    for i in $(seq 1 $VM_COUNT); do
-        VM_NAME="${VM_PREFIX}${i}"
-        VM_DIR="$HOME/VirtualBox VMs/$VM_NAME"
-        VDI_PATH="$VM_DIR/$VM_NAME.vdi"
+  for i in $(seq 1 $VM_COUNT); do
+    VM_NAME="${VM_PREFIX}${i}"
+    VM_DIR="$HOME/VirtualBox VMs/$VM_NAME"
+    VDI_PATH="$VM_DIR/$VM_NAME.vdi"
 
-        if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
-            echo "VM $VM_NAME already exists, skipping creation."
-            continue
-        fi
+    if VBoxManage list vms | grep -q "\"$VM_NAME\""; then
+      echo "[SKIP] VM $VM_NAME exists."
+      continue
+    fi
 
-        echo "Creating VM $VM_NAME..."
-        VBoxManage createvm --name "$VM_NAME" --register
-        VBoxManage modifyvm "$VM_NAME" \
-            --memory 4096 \
-            --cpus 2 \
-            --ioapic on \
-    	    --boot1 net \
-            --nic1 hostonly \
-    	    --hostonlyadapter1 "$NET_NAME" 
-        mkdir -p "$VM_DIR"
-        VBoxManage createmedium disk --filename "$VDI_PATH" --size 10240 --format VDI
-        VBoxManage storagectl "$VM_NAME" --name "SATA Controller" --add sata --controller IntelAhci
-        VBoxManage storageattach "$VM_NAME" --storagectl "SATA Controller" --port 0 --device 0 --type hdd --medium "$VDI_PATH"
+    # Create VM
+    VBoxManage createvm --name "$VM_NAME" --register
 
-        echo "VM $VM_NAME created and configured to boot via PXE."
-    done
+    # Configure memory and CPU
+    VBoxManage modifyvm "$VM_NAME" \
+      --memory "$VM_MEMORY" \
+      --cpus "$VM_CPUS" \
+      --ioapic on \
+      --boot1 net \
+      --boot2 disk \
+      --boot3 none \
+      --boot4 none
+
+    # Configure NIC1: host-only for PXE
+    VBoxManage modifyvm "$VM_NAME" \
+      --nic1 hostonly \
+      --hostonlyadapter1 "$HOST_ONLY_NET" \
+      --nictype1 82540EM \
+      --cableconnected1 on
+
+    # Optional NIC2: NAT for internet
+    if [[ "$NAT_NET" == true ]]; then
+      VBoxManage modifyvm "$VM_NAME" \
+        --nic2 nat \
+        --cableconnected2 on
+    fi
+
+    # Create and attach disk
+    mkdir -p "$VM_DIR"
+    VBoxManage createmedium disk --filename "$VDI_PATH" --size "$DISK_SIZE" --format VDI
+    VBoxManage storagectl "$VM_NAME" --name "SATA Controller" --add sata --controller IntelAhci
+    VBoxManage storageattach "$VM_NAME" \
+      --storagectl "SATA Controller" \
+      --port 0 --device 0 --type hdd --medium "$VDI_PATH"
+
+    echo "[CREATED] $VM_NAME"
+  done
 fi
 
 # ----------------------------
 # Run VMs
 # ----------------------------
 if [[ "$ACTION" == "run" || "$ACTION" == "create_run" ]]; then
-    for i in $(seq 1 $VM_COUNT); do
-        VM_NAME="${VM_PREFIX}${i}"
-        if VBoxManage list runningvms | grep -q "\"$VM_NAME\""; then
-            echo "VM $VM_NAME already running."
-            continue
-        fi
-        echo "Starting VM $VM_NAME..."
-        VBoxManage startvm "$VM_NAME" --type headless
-    done
+  for i in $(seq 1 $VM_COUNT); do
+    VM_NAME="${VM_PREFIX}${i}"
+    if ! VBoxManage list runningvms | grep -q "\"$VM_NAME\""; then
+      VBoxManage startvm "$VM_NAME" --type headless
+      echo "[STARTED] $VM_NAME"
+    fi
+  done
 fi
 
-echo "Operation '$ACTION' completed."
-echo "Use 'VBoxManage list vms' to see your clients."
+echo "[DONE] Action '$ACTION' completed."
 

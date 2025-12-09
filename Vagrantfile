@@ -21,11 +21,12 @@ Vagrant.configure("2") do |config|
 
       # Update system
       apt-get update -y
-      apt-get install -y dnsmasq pxelinux syslinux-common unzip net-tools
+      apt-get install -y dnsmasq pxelinux syslinux-common nfs-kernel-server net-tools
 
       # Create TFTP root
       mkdir -p /srv/tftp
       cp /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/ || true
+      cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /srv/tftp/ || true
 
       # Detect PXE interface dynamically
       PXE_IFACE=$(ip -o -4 addr show | awk '/192\\.168\\.56\\./ {print $2; exit}')
@@ -46,26 +47,23 @@ EOF
       systemctl enable dnsmasq
       systemctl restart dnsmasq
 
-      # Setup PXELINUX config
+      # Setup PXELINUX config pointing to minimal Debian NFS root
       mkdir -p /srv/tftp/pxelinux.cfg
       cat > /srv/tftp/pxelinux.cfg/default <<EOF
-DEFAULT local
+DEFAULT debian
 PROMPT 0
 TIMEOUT 50
-MENU TITLE PXE Boot Menu
 
-LABEL local
-  MENU LABEL Boot Local
-  LOCALBOOT 0
-
-LABEL debianlive
-  MENU LABEL Debian Live XFCE
-  KERNEL debian-live/live/vmlinuz
-  APPEND initrd=debian-live/live/initrd.img boot=live components fetch=tftp://192.168.56.10/debian-live/live/filesystem.squashfs
+LABEL debian
+  MENU LABEL Boot Debian PXE (NFS root)
+  KERNEL vmlinuz
+  INITRD initrd.img
+  APPEND root=/dev/nfs nfsroot=192.168.56.10:/srv/live-build/pxe-root,rw ip=dhcp nfsrootwait
 EOF
 
-      # Create ISO directory for PXE boot
-      mkdir -p /srv/iso
+      # Ensure /srv/live-build/pxe-root exists (placeholder)
+      mkdir -p /srv/live-build/pxe-root
+
       echo "PXE server setup completed!"
     SHELL
   end
