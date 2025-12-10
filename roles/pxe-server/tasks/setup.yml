@@ -1,10 +1,8 @@
 ---
-# ===========================
-# PXE + NFS-root Debian boot (no Clonezilla)
-# ===========================
+# PXE server setup using a pre-built Debian root at /srv/debian-root
 
 # ----------------------------
-# Detect PXE interface (host-only adapter)
+# Detect PXE interface and IP
 # ----------------------------
 - name: Detect PXE interface
   shell: ip -o -4 addr show | awk '/192\.168\.56\./ {print $2; exit}'
@@ -25,7 +23,7 @@
     msg: "PXE interface: {{ pxe_interface }}, IP: {{ pxe_ip.stdout }}"
 
 # ----------------------------
-# Install PXE, NFS, and utilities
+# Install PXE-related packages
 # ----------------------------
 - name: Install required packages
   apt:
@@ -34,14 +32,14 @@
       - pxelinux
       - syslinux-common
       - nfs-kernel-server
+      - tftp
       - unzip
       - net-tools
-      - tftp
     state: present
     update_cache: yes
 
 # ----------------------------
-# Prepare TFTP root
+# Prepare TFTP directories
 # ----------------------------
 - name: Create TFTP directories
   file:
@@ -52,19 +50,18 @@
     mode: '0755'
   loop:
     - /srv/tftp
-    - /srv/tftp/modules
+    - /srv/tftp/pxelinux.cfg
 
 # ----------------------------
-# Copy PXE bootloader
+# Copy pxelinux binaries and modules
 # ----------------------------
-- name: Find pxelinux.0 in system
+- name: Find pxelinux.0
   shell: |
     for d in /usr/lib/PXELINUX /usr/lib/syslinux /usr/share/syslinux /usr/lib/syslinux/modules/bios; do
-      if [ -f "$d/pxelinux.0" ]; then echo "$d/pxelinux.0"; exit 0; fi
+      [ -f "$d/pxelinux.0" ] && echo "$d/pxelinux.0" && exit 0
     done
   register: pxelinux_path
   changed_when: false
-  failed_when: pxelinux_path.stdout == ""
 
 - name: Copy pxelinux.0 to TFTP
   copy:
@@ -73,59 +70,90 @@
     dest: /srv/tftp/pxelinux.0
     mode: '0644'
 
-# ----------------------------
-# Copy syslinux BIOS modules
-# ----------------------------
-- name: Copy syslinux BIOS modules
+- name: Copy .c32 modules to TFTP
   shell: |
-    for d in /usr/lib/syslinux/modules/bios /usr/share/syslinux; do
-      if [ -d "$d" ]; then cp -a $d/* /srv/tftp/modules/; fi
+    for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
+      [ -d "$dir" ] || continue
+      cp -f "$dir"/*.c32 /srv/tftp/ 2>/dev/null || true
     done
-    cp -a /usr/lib/syslinux/*.c32 /srv/tftp/ 2>/dev/null || true
   args:
     executable: /bin/bash
 
 # ----------------------------
-# Create PXE config directory
+# Copy kernel and initrd from /srv/debian-root
 # ----------------------------
-- name: Ensure pxelinux.cfg directory exists
-  file:
-    path: /srv/tftp/pxelinux.cfg
-    state: directory
-    owner: nobody
-    group: nogroup
-    mode: '0755'
+- name: Copy vmlinuz and initrd.img
+  shell: |
+    set -e
+    vmlinuz=$(ls -1t /srv/debian-root/boot/vmlinuz-* | head -n1)
+    initrd=$(ls -1t /srv/debian-root/boot/initrd.img-* | head -n1)
+    cp -f "$vmlinuz" /srv/tftp/vmlinuz
+    cp -f "$initrd" /srv/tftp/initrd.img
+  args:
+    executable: /bin/bash
 
 # ----------------------------
-# Create real PXE boot menu
+# Configure PXE boot menu
 # ----------------------------
-- name: Install proper PXE boot menu
+- name: Create PXE boot menu
   copy:
     dest: /srv/tftp/pxelinux.cfg/default
-    owner: nobody
-    group: nogroup
     mode: '0644'
     content: |
       DEFAULT debian
       PROMPT 0
-      TIMEOUT 30
+      TIMEOUT 20
 
       LABEL debian
+        MENU LABEL Debian PXE (NFS root)
         KERNEL vmlinuz
         INITRD initrd.img
-        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/nfs/debian rw ip=dhcp
+        APPEND root=/dev/nfs ip=dhcp \
+          nfsroot={{ pxe_ip.stdout }}:/srv/debian-root,vers=3,rw \
+          nfsrootdebug
+
+# ----------------------------
+# Ensure NFS export exists
+# ----------------------------
+- name: Ensure /srv/debian-root exists
+  file:
+    path: /srv/debian-root
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Compute PXE network
+  set_fact:
+    pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
+
+- name: Export PXE root via NFS
+  copy:
+    dest: /etc/exports.d/pxe-root.exports
+    mode: '0644'
+    content: |
+      /srv/debian-root {{ pxe_network }}(rw,async,no_root_squash,no_subtree_check)
+
+- name: Reload NFS exports
+  command: exportfs -ra
+
+- name: Ensure nfs-kernel-server is started
+  service:
+    name: nfs-kernel-server
+    state: started
+    enabled: yes
 
 # ----------------------------
 # Configure dnsmasq for PXE
 # ----------------------------
-- name: Backup dnsmasq.conf if not already backed up
+- name: Backup dnsmasq.conf if not exists
   copy:
     src: /etc/dnsmasq.conf
     dest: /etc/dnsmasq.conf.bak
     remote_src: yes
     force: no
 
-- name: Configure dnsmasq PXE
+- name: Configure dnsmasq for PXE
   copy:
     dest: /etc/dnsmasq.d/pxe.conf
     mode: '0644'
@@ -138,12 +166,17 @@
       enable-tftp
       tftp-root=/srv/tftp
       log-dhcp
-      # Force next-server to PXE server IP for multi-network clients
       dhcp-option=66,{{ pxe_ip.stdout }}
 
 # ----------------------------
-# Restart dnsmasq
+# Restart services
 # ----------------------------
+- name: Remove dnsmasq lease file
+  file:
+    path: /var/lib/misc/dnsmasq.leases
+    state: absent
+  ignore_errors: yes
+
 - name: Restart dnsmasq
   systemd:
     name: dnsmasq

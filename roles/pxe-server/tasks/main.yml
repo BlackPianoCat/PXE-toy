@@ -3,8 +3,8 @@
 # Orchestrates PXE server setup and Debian image bootstrap
 
 # 1. PXE server setup (TFTP, dnsmasq, nginx, etc.)
-- import_tasks: setup.yml
+- import_tasks: debootstrap.yml
 
 # 2. Bootstrap Debian rootfs for PXE clients
-- import_tasks: debootstrap.yml
+- import_tasks: setup.yml
 

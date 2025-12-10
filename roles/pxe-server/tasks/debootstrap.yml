@@ -1,66 +1,42 @@
 ---
-# PXE Debian boot using debootstrap and NFS root
-# Minimal corrections to ensure PXE files exist
+# Pure debootstrap for NFS or local disk usage
+# No PXE logic, just create and configure the Debian root
 
-# ----------------------------
-# Detect PXE interface IP (calculate and expose pxe_ip)
-# ----------------------------
-- name: Detect PXE interface IP
-  shell: |
-    ip -4 addr show dev {{ pxe_interface | default('eth1') }} \
-      | awk '/inet / {gsub("/.*","",$2); print $2; exit}'
-  register: pxe_ip
-  changed_when: false
-  failed_when: pxe_ip.stdout == ""
-  tags: always
-
-- name: Debug show detected PXE IP
-  debug:
-    msg: "PXE server IP: {{ pxe_ip.stdout }} (interface: {{ pxe_interface | default('eth1') }})"
-
-# ----------------------------
-# Ensure basic network resolution for apt in chroot
-# ----------------------------
-- name: Ensure DNS resolver is present on host
+- name: Ensure network is ready on host
   lineinfile:
     path: /etc/resolv.conf
     line: "nameserver 8.8.8.8"
     state: present
     create: yes
 
-- name: Wait for deb.debian.org to be reachable
+- name: Wait for Debian mirror to be reachable
   wait_for:
     host: deb.debian.org
     port: 80
     timeout: 60
 
 # ----------------------------
-# Create persistent directories
+# Create directory for root filesystem
 # ----------------------------
-- name: Create required directories (PXE root + TFTP)
+- name: Create NFS / PXE root directory
   file:
-    path: "{{ item }}"
+    path: /srv/live-build/pxe-root
     state: directory
-    owner: nobody
-    group: nogroup
+    owner: root
+    group: root
     mode: '0755'
-  loop:
-    - /srv/live-build/pxe-root
-    - /srv/tftp
-    - /srv/tftp/modules
-    - /srv/tftp/pxelinux.cfg
 
 # ----------------------------
 # Bootstrap Debian base system
 # ----------------------------
-- name: Bootstrap Debian base system (debootstrap)
+- name: Bootstrap Debian base system with debootstrap
   command: >
     debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
   args:
     creates: /srv/live-build/pxe-root/bin/bash
 
 # ----------------------------
-# Copy resolv.conf and sources.list inside chroot
+# Copy resolv.conf and sources.list into chroot
 # ----------------------------
 - name: Copy host resolv.conf into chroot
   copy:
@@ -78,17 +54,9 @@
       deb http://security.debian.org/debian-security bookworm-security main contrib non-free
 
 # ----------------------------
-# Mount virtual filesystems
+# Mount virtual filesystems for chroot
 # ----------------------------
-- name: Bind /tmp inside chroot
-  mount:
-    path: /srv/live-build/pxe-root/tmp
-    src: /tmp
-    fstype: none
-    opts: bind
-    state: mounted
-
-- name: Mount /proc, /sys, /dev, /dev/pts into chroot
+- name: Mount /proc, /sys, /dev inside chroot
   block:
     - mount: { path: /srv/live-build/pxe-root/proc, src: proc, fstype: proc, state: mounted }
     - mount: { path: /srv/live-build/pxe-root/sys, src: sysfs, fstype: sysfs, state: mounted }
@@ -96,9 +64,9 @@
     - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
 
 # ----------------------------
-# Install packages inside chroot
+# Install essential packages inside chroot
 # ----------------------------
-- name: Update APT package lists inside chroot
+- name: Update APT inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update"
   environment:
     PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
@@ -108,18 +76,16 @@
     chroot /srv/live-build/pxe-root /bin/bash -c
     "DEBIAN_FRONTEND=noninteractive apt-get install -y \
       initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools \
-      sudo vim curl wget syslinux-common pxelinux"
-  environment:
-    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
+      sudo vim curl wget"
 
 - name: Clean apt cache inside chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
   changed_when: false
 
 # ----------------------------
-# Create users in chroot
+# Setup users inside chroot
 # ----------------------------
-- name: Ensure admin user blackpianocat exists in chroot
+- name: Ensure admin user exists in chroot
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
     "id -u blackpianocat >/dev/null 2>&1 || \
@@ -129,150 +95,89 @@
   changed_when: false
 
 # ----------------------------
-# Initramfs update for NFS
+# Configure basic networking & hostname
 # ----------------------------
-- name: Add NFS modules to /etc/initramfs-tools/modules
-  lineinfile:
-    path: /srv/live-build/pxe-root/etc/initramfs-tools/modules
-    line: "{{ item }}"
-    create: yes
-  loop:
-    - nfs
-    - nfsv3
-    - nfsv4
-    - ext4
+- name: Set hostname in chroot
+  copy:
+    dest: /srv/live-build/pxe-root/etc/hostname
+    content: "pxeclient\n"
 
-- name: Update-initramfs inside chroot
+- name: Create hosts file in chroot
+  copy:
+    dest: /srv/live-build/pxe-root/etc/hosts
+    content: |
+      127.0.0.1 localhost
+      127.0.1.1 pxeclient
+
+# ----------------------------
+# Update initramfs inside chroot
+# ----------------------------
+- name: Update initramfs in chroot
   command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
   environment:
     PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ----------------------------
-# Copy pxelinux.0 and modules
+# Unmount virtual filesystems before exporting
 # ----------------------------
-- name: Find pxelinux.0 on host
-  shell: |
-    for d in /usr/lib/PXELINUX /usr/lib/syslinux /usr/share/syslinux /usr/lib/syslinux/modules/bios; do
-      if [ -f "$d/pxelinux.0" ]; then echo "$d/pxelinux.0"; exit 0; fi
-    done
-  register: pxelinux_path
-  changed_when: false
+# ----------------------------
+# Unmount virtual filesystems after chroot setup
+# ----------------------------
+- name: Unmount /proc, /sys, /dev, /dev/pts in correct order
+  block:
+    - name: Unmount /dev/pts
+      command: umount -l /srv/live-build/pxe-root/dev/pts
+      ignore_errors: yes
 
-- name: Copy pxelinux.0 to TFTP root
-  copy:
-    remote_src: yes
-    src: "{{ pxelinux_path.stdout }}"
-    dest: /srv/tftp/pxelinux.0
-    mode: '0644'
+    - name: Unmount /dev
+      command: umount -l /srv/live-build/pxe-root/dev
+      ignore_errors: yes
 
-- name: Copy all required .c32 files to TFTP root
-  shell: |
-    for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
-      [ -d "$dir" ] || continue
-      for f in "$dir"/*.c32; do
-        [ -f "$f" ] && cp -f "$f" /srv/tftp/ || true
-      done
-    done
-  args:
-    executable: /bin/bash
+    - name: Unmount /sys
+      command: umount -l /srv/live-build/pxe-root/sys
+      ignore_errors: yes
+
+    - name: Unmount /proc
+      command: umount -l /srv/live-build/pxe-root/proc
+      ignore_errors: yes
+
 
 # ----------------------------
-# Copy kernel and initrd to TFTP
+# Ensure rsync is installed
 # ----------------------------
-- name: Copy vmlinuz and initrd from chroot to /srv/tftp
-  shell: |
-    set -e
-    vmlinuz=$(ls -1t /srv/live-build/pxe-root/boot/vmlinuz-* | head -n1)
-    initrd=$(ls -1t /srv/live-build/pxe-root/boot/initrd.img-* | head -n1)
-    cp -f "$vmlinuz" /srv/tftp/vmlinuz
-    cp -f "$initrd" /srv/tftp/initrd.img
-  args:
-    executable: /bin/bash
+- name: Ensure rsync is installed
+  apt:
+    name: rsync
+    state: present
+    update_cache: yes
 
 # ----------------------------
-# PXE menu
+# Copy completed root to final location
 # ----------------------------
-- name: Configure PXE menu for NFS root
-  copy:
-    dest: /srv/tftp/pxelinux.cfg/default
-    mode: '0644'
-    content: |
-      DEFAULT debian
-      PROMPT 0
-      TIMEOUT 50
-      LABEL debian
-        MENU LABEL Boot Debian PXE (NFS root)
-        KERNEL vmlinuz
-        INITRD initrd.img
-        APPEND root=/dev/nfs nfsroot={{ pxe_ip.stdout }}:/srv/live-build/pxe-root,rw ip=dhcp nfsrootwait
-
-# ----------------------------
-# Ensure TFTP ownership
-# ----------------------------
-- name: Ensure /srv/tftp ownership and modes
+- name: Create final PXE root directory
   file:
-    path: /srv/tftp
-    owner: nobody
-    group: nogroup
-    mode: '0755'
-    recurse: no
-
-# ----------------------------
-# NFS exports
-# ----------------------------
-- name: Ensure /etc/exports.d exists
-  file:
-    path: /etc/exports.d
+    path: /srv/debian-root
     state: directory
+    owner: root
+    group: root
     mode: '0755'
 
-- name: Compute PXE network
-  set_fact:
-    pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
+- name: Copy completed root to final location
+  shell: >
+    rsync -a --one-file-system \
+      --exclude=/proc --exclude=/proc/* \
+      --exclude=/sys --exclude=/sys/* \
+      --exclude=/dev --exclude=/dev/* \
+      --exclude=/dev/pts --exclude=/tmp --exclude=/run \
+      /srv/live-build/pxe-root/ /srv/debian-root/
 
-- name: Configure NFS export for PXE root
-  copy:
-    dest: /etc/exports.d/pxe-root.exports
-    mode: '0644'
-    content: "/srv/live-build/pxe-root {{ pxe_network }}(rw,no_root_squash,no_subtree_check)"
-
-- name: Reload NFS exports
-  command: exportfs -ra
-
-- name: Ensure nfs-kernel-server is started
-  service:
-    name: nfs-kernel-server
-    state: started
-    enabled: yes
-
-- name: Wait until NFS export is ready
-  shell: "showmount -e {{ pxe_ip.stdout }}"
-  register: nfs_ready
-  retries: 5
-  delay: 2
-  until: nfs_ready.rc == 0
-
-# ----------------------------
-# Restart dnsmasq
-# ----------------------------
-- name: Remove dnsmasq lease file
+- name: Set correct permissions on PXE root
   file:
-    path: /var/lib/misc/dnsmasq.leases
-    state: absent
-  ignore_errors: yes
-
-- name: Restart dnsmasq
-  systemd:
-    name: dnsmasq
-    state: restarted
-    enabled: yes
-
-# ----------------------------
-# Final debug
-# ----------------------------
-- name: Debug TFTP files
-  debug:
-    msg: |
-      PXE files in /srv/tftp: pxelinux.0, ldlinux.c32, vmlinuz, initrd.img
-      NFS export: {{ pxe_network }}
+    path: /srv/debian-root
+    state: directory
+    recurse: yes
+    owner: root
+    group: root
+    mode: '0755'
+  become: yes
 
