@@ -2,7 +2,7 @@
 # PXE NFS boot root creation using debootstrap
 
 # -------------------------------------------------
-# Ensure host networking
+# Host networking
 # -------------------------------------------------
 - name: Ensure host can resolve names
   lineinfile:
@@ -18,7 +18,7 @@
     timeout: 60
 
 # -------------------------------------------------
-# Create build root
+# Build root
 # -------------------------------------------------
 - name: Create NFS PXE build root
   file:
@@ -28,9 +28,6 @@
     group: root
     mode: '0755'
 
-# -------------------------------------------------
-# Bootstrap Debian
-# -------------------------------------------------
 - name: Bootstrap Debian base system
   command: >
     debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
@@ -38,7 +35,7 @@
     creates: /srv/live-build/pxe-root/bin/bash
 
 # -------------------------------------------------
-# Configure apt inside chroot
+# Configure apt inside build root
 # -------------------------------------------------
 - name: Copy resolv.conf into build root
   copy:
@@ -60,40 +57,12 @@
 # -------------------------------------------------
 - name: Mount chroot virtual filesystems
   block:
-    - mount:
-        path: /srv/live-build/pxe-root/proc
-        src: proc
-        fstype: proc
-        state: mounted
-    - mount:
-        path: /srv/live-build/pxe-root/sys
-        src: sysfs
-        fstype: sysfs
-        state: mounted
-    - mount:
-        path: /srv/live-build/pxe-root/dev
-        src: /dev
-        fstype: none
-        opts: bind
-        state: mounted
-    - mount:
-        path: /srv/live-build/pxe-root/dev/pts
-        src: /dev/pts
-        fstype: none
-        opts: bind
-        state: mounted
-    - mount:
-        path: /srv/live-build/pxe-root/run
-        src: /run
-        fstype: none
-        opts: bind
-        state: mounted
-    - mount:
-        path: /srv/live-build/pxe-root/tmp
-        src: tmpfs
-        fstype: tmpfs
-        opts: mode=1777
-        state: mounted
+    - mount: { path: /srv/live-build/pxe-root/proc, src: proc, fstype: proc, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/sys, src: sysfs, fstype: sysfs, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/dev, src: /dev, fstype: none, opts: bind, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/run, src: /run, fstype: none, opts: bind, state: mounted }
+    - mount: { path: /srv/live-build/pxe-root/tmp, src: tmpfs, fstype: tmpfs, opts: mode=1777, state: mounted }
 
 # -------------------------------------------------
 # Install essential packages inside build root
@@ -136,33 +105,20 @@
       127.0.1.1 pxeclient
 
 # -------------------------------------------------
-# Minimal device nodes
+# Minimal device nodes in build root
 # -------------------------------------------------
 - name: Create essential device nodes in build root
   block:
-    - name: Ensure /dev exists
-      file:
-        path: /srv/live-build/pxe-root/dev
-        state: directory
-        mode: '0755'
-
-    - name: Create /dev/null
-      command: mknod -m 666 /srv/live-build/pxe-root/dev/null c 1 3
-      args:
-        creates: /srv/live-build/pxe-root/dev/null
-
-    - name: Create /dev/zero
-      command: mknod -m 666 /srv/live-build/pxe-root/dev/zero c 1 5
-      args:
-        creates: /srv/live-build/pxe-root/dev/zero
-
-    - name: Create /dev/console
-      command: mknod -m 600 /srv/live-build/pxe-root/dev/console c 5 1
-      args:
-        creates: /srv/live-build/pxe-root/dev/console
+    - file: { path: /srv/live-build/pxe-root/dev, state: directory, mode: '0755' }
+    - command: mknod -m 666 /srv/live-build/pxe-root/dev/null c 1 3
+      args: { creates: /srv/live-build/pxe-root/dev/null }
+    - command: mknod -m 666 /srv/live-build/pxe-root/dev/zero c 1 5
+      args: { creates: /srv/live-build/pxe-root/dev/zero }
+    - command: mknod -m 600 /srv/live-build/pxe-root/dev/console c 5 1
+      args: { creates: /srv/live-build/pxe-root/dev/console }
 
 # -------------------------------------------------
-# Build initramfs inside build root
+# Build initramfs in build root
 # -------------------------------------------------
 - name: Update initramfs in build root
   command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
@@ -204,7 +160,7 @@
     /srv/live-build/pxe-root/ /srv/debian-root/
 
 # -------------------------------------------------
-# Prepare final root for boot
+# Prepare final root for NFS boot
 # -------------------------------------------------
 - name: Ensure /dev and /tmp exist in final root
   file:
@@ -218,14 +174,11 @@
 - name: Create minimal device nodes in final root
   block:
     - command: mknod -m 666 /srv/debian-root/dev/null c 1 3
-      args:
-        creates: /srv/debian-root/dev/null
+      args: { creates: /srv/debian-root/dev/null }
     - command: mknod -m 666 /srv/debian-root/dev/zero c 1 5
-      args:
-        creates: /srv/debian-root/dev/zero
+      args: { creates: /srv/debian-root/dev/zero }
     - command: mknod -m 600 /srv/debian-root/dev/console c 5 1
-      args:
-        creates: /srv/debian-root/dev/console
+      args: { creates: /srv/debian-root/dev/console }
 
 - name: Ensure essential packages in final root
   command: >
