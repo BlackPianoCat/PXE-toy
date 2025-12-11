@@ -104,7 +104,7 @@
         KERNEL vmlinuz
         INITRD initrd.img
         APPEND root=/dev/nfs ip=dhcp \
-          nfsroot={{ pxe_ip.stdout }}:/srv/debian-root,vers=3,rw \
+          nfsroot={{ pxe_ip.stdout }}:/srv/debian-root,vers=3,rw,nolock \
           nfsrootdebug
 
 # ----------------------------
@@ -123,7 +123,7 @@
     dest: /etc/exports
     mode: '0644'
     content: |
-      /srv/debian-root {{ pxe_ip.stdout }}/24(rw,async,no_root_squash,no_subtree_check)
+      /srv/debian-root 192.168.56.0/24(rw,async,no_root_squash,no_subtree_check)
 
 - name: Reload NFS exports
   command: exportfs -ra
