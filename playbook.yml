@@ -1,51 +1,64 @@
 ---
 # playbook.yml
-# Purpose: PXE infrastructure setup
-# PXE clients are placeholders (bare machines, no OS yet)
+# Purpose: Set up PXE server base packages
 
 # --------------------------
-# Play 1: Base packages on PXE server
+# Global vars and host key checking
 # --------------------------
-- name: Ensure base packages on PXE server
-  hosts: pxe_servers
-  become: yes
-  gather_facts: yes  # PXE server has Python
+- name: Configure Ansible for PXE server
+  hosts: localhost
+  gather_facts: no
   tasks:
-    - name: Ensure ntpdate for correct time
-      apt:
-        name: ntpdate
-        state: present
-        update_cache: yes
+    - name: Disable SSH host key checking
+      set_fact:
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
-- name: PXE server bootstrap
+# --------------------------
+# Play 1: Ensure base packages on PXE server
+# --------------------------
+- name: Install base packages on PXE server
   hosts: pxe_servers
   become: yes
   gather_facts: yes
-
   tasks:
-    - name: Ensure debootstrap is installed on PXE server
+    - name: Update apt cache
       apt:
-        name: debootstrap
-        state: present
         update_cache: yes
+        cache_valid_time: 3600
 
+    - name: Ensure base packages are installed
+      apt:
+        name:
+          - ntpdate
+          - debootstrap
+          - sudo
+          - vim
+          - curl
+          - wget
+          - net-tools
+          - iproute2
+          - rsync
+        state: present
+      ignore_errors: yes
+
+    - name: Sync time with NTP
+      command: ntpdate -u pool.ntp.org
+      ignore_errors: yes
 
 # --------------------------
-# Play 2: Configure PXE server
+# Play 2: PXE server setup (optional role)
 # --------------------------
-- name: Configure PXE server
+- name: Configure PXE server role
   hosts: pxe_servers
   become: yes
   gather_facts: yes
-  vars:
-    chroot_path: /srv/live-build/chroot
   roles:
     - pxe-server
 
 # --------------------------
 # Play 3: PXE clients placeholder
 # --------------------------
-- name: PXE clients (bare, not configured yet)
+- name: PXE clients (bare, placeholder)
   hosts: pxe_clients
   gather_facts: no
   tasks:

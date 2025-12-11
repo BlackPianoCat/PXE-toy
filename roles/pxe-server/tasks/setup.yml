@@ -1,31 +1,26 @@
 ---
-# PXE server setup using a pre-built Debian root at /srv/debian-root
+# PXE server role for Vagrant NFS/PXE boot
 
 # ----------------------------
-# Detect PXE interface and IP
+# PXE interface
 # ----------------------------
-- name: Detect PXE interface
-  shell: ip -o -4 addr show | awk '/192\.168\.56\./ {print $2; exit}'
-  register: iface_result
-  changed_when: false
-  failed_when: iface_result.rc != 0 or iface_result.stdout == ""
-
 - name: Set PXE interface fact
   set_fact:
-    pxe_interface: "{{ iface_result.stdout | trim }}"
+    # Vagrant host only adapter is eth1 inside the VM
+    pxe_interface: "eth1"
 
-- name: Detect PXE interface IP
+- name: Get PXE server IP
   shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {gsub("/.*","",$2); print $2}'
   register: pxe_ip
   changed_when: false
 
 - debug:
-    msg: "PXE interface: {{ pxe_interface }}, IP: {{ pxe_ip.stdout }}"
+    msg: "PXE interface={{ pxe_interface }}, IP={{ pxe_ip.stdout }}"
 
 # ----------------------------
-# Install PXE-related packages
+# Ensure PXE/NFS packages installed
 # ----------------------------
-- name: Install required packages
+- name: Install PXE/NFS packages
   apt:
     name:
       - dnsmasq
@@ -41,7 +36,7 @@
 # ----------------------------
 # Prepare TFTP directories
 # ----------------------------
-- name: Create TFTP directories
+- name: Ensure TFTP directories
   file:
     path: "{{ item }}"
     state: directory
@@ -53,7 +48,7 @@
     - /srv/tftp/pxelinux.cfg
 
 # ----------------------------
-# Copy pxelinux binaries and modules
+# Copy PXELINUX binaries
 # ----------------------------
 - name: Find pxelinux.0
   shell: |
@@ -62,15 +57,16 @@
     done
   register: pxelinux_path
   changed_when: false
+  failed_when: pxelinux_path.stdout == ""
 
-- name: Copy pxelinux.0 to TFTP
+- name: Copy pxelinux.0
   copy:
     remote_src: yes
     src: "{{ pxelinux_path.stdout }}"
     dest: /srv/tftp/pxelinux.0
     mode: '0644'
 
-- name: Copy .c32 modules to TFTP
+- name: Copy .c32 modules
   shell: |
     for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
       [ -d "$dir" ] || continue
@@ -80,11 +76,10 @@
     executable: /bin/bash
 
 # ----------------------------
-# Copy kernel and initrd from /srv/debian-root
+# Copy kernel/initrd
 # ----------------------------
 - name: Copy vmlinuz and initrd.img
   shell: |
-    set -e
     vmlinuz=$(ls -1t /srv/debian-root/boot/vmlinuz-* | head -n1)
     initrd=$(ls -1t /srv/debian-root/boot/initrd.img-* | head -n1)
     cp -f "$vmlinuz" /srv/tftp/vmlinuz
@@ -93,7 +88,7 @@
     executable: /bin/bash
 
 # ----------------------------
-# Configure PXE boot menu
+# PXE menu
 # ----------------------------
 - name: Create PXE boot menu
   copy:
@@ -113,45 +108,55 @@
           nfsrootdebug
 
 # ----------------------------
-# Ensure NFS export exists
+# NFS export
 # ----------------------------
-- name: Ensure /srv/debian-root exists
+- name: Ensure PXE root exists
   file:
     path: /srv/debian-root
     state: directory
-    owner: root
-    group: root
+    owner: nobody
+    group: nogroup
     mode: '0755'
 
-- name: Compute PXE network
-  set_fact:
-    pxe_network: "{{ pxe_ip.stdout | regex_replace('([0-9]+)$','0') }}/24"
-
-- name: Export PXE root via NFS
+- name: Create /etc/exports for PXE root
   copy:
-    dest: /etc/exports.d/pxe-root.exports
+    dest: /etc/exports
     mode: '0644'
     content: |
-      /srv/debian-root {{ pxe_network }}(rw,async,no_root_squash,no_subtree_check)
+      /srv/debian-root {{ pxe_ip.stdout }}/24(rw,async,no_root_squash,no_subtree_check)
 
 - name: Reload NFS exports
   command: exportfs -ra
 
-- name: Ensure nfs-kernel-server is started
+- name: Start nfs-kernel-server
   service:
     name: nfs-kernel-server
     state: started
     enabled: yes
 
 # ----------------------------
-# Configure dnsmasq for PXE
+# dnsmasq
 # ----------------------------
-- name: Backup dnsmasq.conf if not exists
+# gather current services first
+- name: Gather service facts
+  service_facts:
+
+# stop systemd-resolved if it exists
+- name: Stop systemd-resolved if running
+  systemd:
+    name: systemd-resolved
+    state: stopped
+    enabled: no
+  when: "'systemd-resolved' in ansible_facts.services"
+  ignore_errors: yes
+
+- name: Replace resolv.conf with public DNS
   copy:
-    src: /etc/dnsmasq.conf
-    dest: /etc/dnsmasq.conf.bak
-    remote_src: yes
-    force: no
+    dest: /etc/resolv.conf
+    content: "nameserver 8.8.8.8\n"
+    owner: root
+    group: root
+    mode: '0644'
 
 - name: Configure dnsmasq for PXE
   copy:
@@ -162,24 +167,29 @@
       bind-interfaces
       dhcp-range=192.168.56.100,192.168.56.200,12h
       dhcp-boot=pxelinux.0
-      pxe-service=x86PC,"PXE Boot",pxelinux.0
       enable-tftp
       tftp-root=/srv/tftp
       log-dhcp
-      dhcp-option=66,{{ pxe_ip.stdout }}
 
-# ----------------------------
-# Restart services
-# ----------------------------
-- name: Remove dnsmasq lease file
-  file:
-    path: /var/lib/misc/dnsmasq.leases
-    state: absent
+- name: Test dnsmasq configuration
+  shell: dnsmasq --test
+  register: dnsmasq_test
   ignore_errors: yes
+  changed_when: false
 
-- name: Restart dnsmasq
+- name: Debug dnsmasq test output
+  debug:
+    var: dnsmasq_test.stdout_lines
+
+- name: Restart dnsmasq if configuration is valid
   systemd:
     name: dnsmasq
     state: restarted
     enabled: yes
+  when: dnsmasq_test.rc == 0
+
+- name: Warn if dnsmasq configuration is invalid
+  debug:
+    msg: "dnsmasq configuration failed. Check pxe.conf."
+  when: dnsmasq_test.rc != 0
 

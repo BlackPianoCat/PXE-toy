@@ -1,24 +1,26 @@
 ---
-# Pure debootstrap for NFS or local disk usage
-# No PXE logic, just create and configure the Debian root
+# PXE NFS boot root creation using debootstrap
 
-- name: Ensure network is ready on host
+# -------------------------------------------------
+# Ensure host networking
+# -------------------------------------------------
+- name: Ensure host can resolve names
   lineinfile:
     path: /etc/resolv.conf
     line: "nameserver 8.8.8.8"
     state: present
     create: yes
 
-- name: Wait for Debian mirror to be reachable
+- name: Wait for Debian mirror
   wait_for:
     host: deb.debian.org
     port: 80
     timeout: 60
 
-# ----------------------------
-# Create directory for root filesystem
-# ----------------------------
-- name: Create NFS / PXE root directory
+# -------------------------------------------------
+# Create build root
+# -------------------------------------------------
+- name: Create NFS PXE build root
   file:
     path: /srv/live-build/pxe-root
     state: directory
@@ -26,25 +28,25 @@
     group: root
     mode: '0755'
 
-# ----------------------------
-# Bootstrap Debian base system
-# ----------------------------
-- name: Bootstrap Debian base system with debootstrap
+# -------------------------------------------------
+# Bootstrap Debian
+# -------------------------------------------------
+- name: Bootstrap Debian base system
   command: >
     debootstrap --arch=amd64 bookworm /srv/live-build/pxe-root http://deb.debian.org/debian
   args:
     creates: /srv/live-build/pxe-root/bin/bash
 
-# ----------------------------
-# Copy resolv.conf and sources.list into chroot
-# ----------------------------
-- name: Copy host resolv.conf into chroot
+# -------------------------------------------------
+# Configure apt inside chroot
+# -------------------------------------------------
+- name: Copy resolv.conf into build root
   copy:
     src: /etc/resolv.conf
     dest: /srv/live-build/pxe-root/etc/resolv.conf
     mode: '0644'
 
-- name: Create minimal sources.list in chroot
+- name: Create sources.list in build root
   copy:
     dest: /srv/live-build/pxe-root/etc/apt/sources.list
     mode: '0644'
@@ -53,108 +55,140 @@
       deb http://deb.debian.org/debian bookworm-updates main contrib non-free
       deb http://security.debian.org/debian-security bookworm-security main contrib non-free
 
-# ----------------------------
-# Mount virtual filesystems for chroot
-# ----------------------------
-- name: Mount /proc, /sys, /dev inside chroot
+# -------------------------------------------------
+# Mount virtual filesystems
+# -------------------------------------------------
+- name: Mount chroot virtual filesystems
   block:
-    - mount: { path: /srv/live-build/pxe-root/proc, src: proc, fstype: proc, state: mounted }
-    - mount: { path: /srv/live-build/pxe-root/sys, src: sysfs, fstype: sysfs, state: mounted }
-    - mount: { path: /srv/live-build/pxe-root/dev, src: /dev, fstype: none, opts: bind, state: mounted }
-    - mount: { path: /srv/live-build/pxe-root/dev/pts, src: /dev/pts, fstype: none, opts: bind, state: mounted }
+    - mount:
+        path: /srv/live-build/pxe-root/proc
+        src: proc
+        fstype: proc
+        state: mounted
+    - mount:
+        path: /srv/live-build/pxe-root/sys
+        src: sysfs
+        fstype: sysfs
+        state: mounted
+    - mount:
+        path: /srv/live-build/pxe-root/dev
+        src: /dev
+        fstype: none
+        opts: bind
+        state: mounted
+    - mount:
+        path: /srv/live-build/pxe-root/dev/pts
+        src: /dev/pts
+        fstype: none
+        opts: bind
+        state: mounted
+    - mount:
+        path: /srv/live-build/pxe-root/run
+        src: /run
+        fstype: none
+        opts: bind
+        state: mounted
+    - mount:
+        path: /srv/live-build/pxe-root/tmp
+        src: tmpfs
+        fstype: tmpfs
+        opts: mode=1777
+        state: mounted
 
-# ----------------------------
-# Install essential packages inside chroot
-# ----------------------------
-- name: Update APT inside chroot
+# -------------------------------------------------
+# Install essential packages inside build root
+# -------------------------------------------------
+- name: Update apt inside build root
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get update"
-  environment:
-    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
 
-- name: Install essential packages inside chroot
+- name: Install essential packages inside build root
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
     "DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools \
-      sudo vim curl wget"
+     initramfs-tools linux-image-amd64 nfs-common iproute2 net-tools sudo vim curl wget libc-bin"
 
-- name: Clean apt cache inside chroot
+- name: Clean apt inside build root
   command: chroot /srv/live-build/pxe-root /bin/bash -c "apt-get clean"
   changed_when: false
 
-# ----------------------------
-# Setup users inside chroot
-# ----------------------------
-- name: Ensure admin user exists in chroot
+# -------------------------------------------------
+# Users, hostname, hosts
+# -------------------------------------------------
+- name: Ensure admin user exists
   command: >
     chroot /srv/live-build/pxe-root /bin/bash -c
-    "id -u blackpianocat >/dev/null 2>&1 || \
-     (useradd -m -s /bin/bash blackpianocat && \
-      echo 'blackpianocat:sebix4ever' | chpasswd && \
+    "id -u blackpianocat >/dev/null 2>&1 ||
+     (useradd -m -s /bin/bash blackpianocat &&
+      echo 'blackpianocat:sebix4ever' | chpasswd &&
       usermod -aG sudo blackpianocat)"
   changed_when: false
 
-# ----------------------------
-# Configure basic networking & hostname
-# ----------------------------
-- name: Set hostname in chroot
+- name: Set hostname
   copy:
     dest: /srv/live-build/pxe-root/etc/hostname
     content: "pxeclient\n"
 
-- name: Create hosts file in chroot
+- name: Create hosts
   copy:
     dest: /srv/live-build/pxe-root/etc/hosts
     content: |
       127.0.0.1 localhost
       127.0.1.1 pxeclient
 
-# ----------------------------
-# Update initramfs inside chroot
-# ----------------------------
-- name: Update initramfs in chroot
-  command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
-  environment:
-    PATH: "/usr/sbin:/usr/bin:/sbin:/bin"
-
-# ----------------------------
-# Unmount virtual filesystems before exporting
-# ----------------------------
-# ----------------------------
-# Unmount virtual filesystems after chroot setup
-# ----------------------------
-- name: Unmount /proc, /sys, /dev, /dev/pts in correct order
+# -------------------------------------------------
+# Minimal device nodes
+# -------------------------------------------------
+- name: Create essential device nodes in build root
   block:
-    - name: Unmount /dev/pts
-      command: umount -l /srv/live-build/pxe-root/dev/pts
+    - name: Ensure /dev exists
+      file:
+        path: /srv/live-build/pxe-root/dev
+        state: directory
+        mode: '0755'
+
+    - name: Create /dev/null
+      command: mknod -m 666 /srv/live-build/pxe-root/dev/null c 1 3
+      args:
+        creates: /srv/live-build/pxe-root/dev/null
+
+    - name: Create /dev/zero
+      command: mknod -m 666 /srv/live-build/pxe-root/dev/zero c 1 5
+      args:
+        creates: /srv/live-build/pxe-root/dev/zero
+
+    - name: Create /dev/console
+      command: mknod -m 600 /srv/live-build/pxe-root/dev/console c 5 1
+      args:
+        creates: /srv/live-build/pxe-root/dev/console
+
+# -------------------------------------------------
+# Build initramfs inside build root
+# -------------------------------------------------
+- name: Update initramfs in build root
+  command: chroot /srv/live-build/pxe-root /bin/bash -c "update-initramfs -u -k all"
+
+# -------------------------------------------------
+# Unmount virtual filesystems
+# -------------------------------------------------
+- name: Unmount chroot virtual filesystems
+  block:
+    - command: umount -l /srv/live-build/pxe-root/run
+      ignore_errors: yes
+    - command: umount -l /srv/live-build/pxe-root/dev/pts
+      ignore_errors: yes
+    - command: umount -l /srv/live-build/pxe-root/dev
+      ignore_errors: yes
+    - command: umount -l /srv/live-build/pxe-root/sys
+      ignore_errors: yes
+    - command: umount -l /srv/live-build/pxe-root/proc
+      ignore_errors: yes
+    - command: umount -l /srv/live-build/pxe-root/tmp
       ignore_errors: yes
 
-    - name: Unmount /dev
-      command: umount -l /srv/live-build/pxe-root/dev
-      ignore_errors: yes
-
-    - name: Unmount /sys
-      command: umount -l /srv/live-build/pxe-root/sys
-      ignore_errors: yes
-
-    - name: Unmount /proc
-      command: umount -l /srv/live-build/pxe-root/proc
-      ignore_errors: yes
-
-
-# ----------------------------
-# Ensure rsync is installed
-# ----------------------------
-- name: Ensure rsync is installed
-  apt:
-    name: rsync
-    state: present
-    update_cache: yes
-
-# ----------------------------
-# Copy completed root to final location
-# ----------------------------
-- name: Create final PXE root directory
+# -------------------------------------------------
+# Copy build root to final NFS root
+# -------------------------------------------------
+- name: Ensure final PXE root exists
   file:
     path: /srv/debian-root
     state: directory
@@ -162,22 +196,58 @@
     group: root
     mode: '0755'
 
-- name: Copy completed root to final location
+- name: Copy completed build root to final NFS root
   shell: >
-    rsync -a --one-file-system \
-      --exclude=/proc --exclude=/proc/* \
-      --exclude=/sys --exclude=/sys/* \
-      --exclude=/dev --exclude=/dev/* \
-      --exclude=/dev/pts --exclude=/tmp --exclude=/run \
-      /srv/live-build/pxe-root/ /srv/debian-root/
+    rsync -a --one-file-system
+    --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/dev/pts
+    --exclude=/run --exclude=/tmp
+    /srv/live-build/pxe-root/ /srv/debian-root/
 
-- name: Set correct permissions on PXE root
+# -------------------------------------------------
+# Prepare final root for boot
+# -------------------------------------------------
+- name: Ensure /dev and /tmp exist in final root
   file:
-    path: /srv/debian-root
+    path: "{{ item.path }}"
     state: directory
-    recurse: yes
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /srv/debian-root/dev, mode: '0755' }
+    - { path: /srv/debian-root/tmp, mode: '1777' }
+
+- name: Create minimal device nodes in final root
+  block:
+    - command: mknod -m 666 /srv/debian-root/dev/null c 1 3
+      args:
+        creates: /srv/debian-root/dev/null
+    - command: mknod -m 666 /srv/debian-root/dev/zero c 1 5
+      args:
+        creates: /srv/debian-root/dev/zero
+    - command: mknod -m 600 /srv/debian-root/dev/console c 5 1
+      args:
+        creates: /srv/debian-root/dev/console
+
+- name: Ensure essential packages in final root
+  command: >
+    chroot /srv/debian-root /bin/bash -c
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y initramfs-tools nfs-common libc-bin"
+
+- name: Rebuild final initramfs
+  command: chroot /srv/debian-root /bin/bash -c "update-initramfs -u -k all"
+
+# -------------------------------------------------
+# Fix final root permissions
+# -------------------------------------------------
+- name: Fix safe directories permissions
+  file:
+    path: "{{ item }}"
     owner: root
     group: root
-    mode: '0755'
-  become: yes
+    mode: "0755"
+  loop:
+    - /srv/debian-root/bin
+    - /srv/debian-root/etc
+    - /srv/debian-root/usr
+    - /srv/debian-root/lib
+    - /srv/debian-root/sbin
 
