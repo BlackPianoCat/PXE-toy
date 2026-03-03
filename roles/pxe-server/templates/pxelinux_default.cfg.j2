@@ -1,0 +1,9 @@
+DEFAULT debian
+PROMPT 0
+TIMEOUT 20
+
+LABEL debian
+  MENU LABEL Debian PXE (NFS root)
+  KERNEL vmlinuz
+  INITRD initrd.img
+  APPEND root=/dev/nfs nfsroot={{ pxe_ip }}:/srv/debian-root,vers=3,rw ip=dhcp

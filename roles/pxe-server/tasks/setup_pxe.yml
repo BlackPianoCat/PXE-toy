@@ -1,6 +1,20 @@
 ---
 # roles/pxe-server/tasks/setup_pxe.yml
-# Purpose: configure PXE boot (TFTP, PXELINUX, kernel/initrd, dnsmasq)
+# PXE boot setup: TFTP, PXELINUX, kernel/initrd, dnsmasq
+
+# ----------------------------
+# Ensure TFTP directories exist
+# ----------------------------
+- name: Ensure TFTP root and config directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: '0755'
+  loop:
+    - "{{ tftp_root | default('/srv/tftp') }}"
+    - "{{ tftp_root | default('/srv/tftp') }}/pxelinux.cfg"
 
 # ----------------------------
 # Copy PXELINUX binaries
@@ -18,66 +32,60 @@
   copy:
     remote_src: yes
     src: "{{ pxelinux_path.stdout }}"
-    dest: /srv/tftp/pxelinux.0
+    dest: "{{ tftp_root | default('/srv/tftp') }}/pxelinux.0"
     mode: '0644'
 
 - name: Copy .c32 modules to TFTP
   shell: |
     for dir in /usr/lib/syslinux /usr/lib/PXELINUX /usr/lib/syslinux/modules/bios /usr/lib/x86_64-linux-gnu/syslinux; do
       [ -d "$dir" ] || continue
-      cp -f "$dir"/*.c32 /srv/tftp/ 2>/dev/null || true
+      cp -u "$dir"/*.c32 "{{ tftp_root | default('/srv/tftp') }}/" 2>/dev/null || true
     done
   args:
     executable: /bin/bash
 
 # ----------------------------
-# Copy kernel and initrd from NFS root
+# Copy kernel and initrd
 # ----------------------------
-- name: Copy vmlinuz and initrd.img to TFTP
+- name: Copy latest kernel and initrd to TFTP
   shell: |
-    vmlinuz=$(ls -1t /srv/debian-root/boot/vmlinuz-* | head -n1)
-    initrd=$(ls -1t /srv/debian-root/boot/initrd.img-* | head -n1)
-    cp -f "$vmlinuz" /srv/tftp/vmlinuz
-    cp -f "$initrd" /srv/tftp/initrd.img
+    mkdir -p "{{ tftp_root | default('/srv/tftp') }}"
+    cp -u $(ls -1t {{ nfs_root | default('/srv/debian-root') }}/boot/vmlinuz-* | head -n1) "{{ tftp_root | default('/srv/tftp') }}/vmlinuz"
+    cp -u $(ls -1t {{ nfs_root | default('/srv/debian-root') }}/boot/initrd.img-* | head -n1) "{{ tftp_root | default('/srv/tftp') }}/initrd.img"
   args:
     executable: /bin/bash
 
 # ----------------------------
-# Create PXE boot menu
+# PXELINUX menu (template)
 # ----------------------------
-- name: Create PXELINUX default config
-  copy:
-    dest: /srv/tftp/pxelinux.cfg/default
+- name: Create PXELINUX default config from template
+  template:
+    src: pxelinux_default.cfg.j2
+    dest: "{{ tftp_root | default('/srv/tftp') }}/pxelinux.cfg/default"
     mode: '0644'
-    content: |
-      DEFAULT debian
-      PROMPT 0
-      TIMEOUT 20
-
-      LABEL debian
-        MENU LABEL Debian PXE (NFS root)
-        KERNEL vmlinuz
-        INITRD initrd.img
-        APPEND root=/dev/nfs ip=dhcp \
-          nfsroot={{ hostvars['localhost'].pxe_ip.stdout }}:/srv/debian-root,vers=3,rw,nolock \
-          nfsrootdebug
-
+  vars:
+    pxe_ip: "192.168.56.10"   # <- must match PXE interface IP
+    nfs_root: "/srv/debian-root"
+    
 # ----------------------------
-# Configure dnsmasq for PXE boot
+# DNS/DHCP setup
 # ----------------------------
-- name: Kill any process on port 53
-  shell: lsof -i :53 -t | xargs -r kill -9
+- name: Kill any processes using port 53
+  shell: |
+    fuser -k 53/tcp || true
+    fuser -k 53/udp || true
   ignore_errors: yes
 
-- name: Stop and mask systemd-resolved
+- name: Stop systemd-resolved if installed
   systemd:
     name: systemd-resolved
     state: stopped
     enabled: no
     masked: yes
+  when: "'systemd-resolved.service' in ansible_facts.services"
   ignore_errors: yes
 
-- name: Set public DNS for PXE server
+- name: Ensure /etc/resolv.conf has public DNS
   copy:
     dest: /etc/resolv.conf
     content: "nameserver 8.8.8.8\n"
@@ -85,25 +93,20 @@
     group: root
     mode: '0644'
 
-- name: Write dnsmasq PXE configuration
-  copy:
+# ----------------------------
+# dnsmasq PXE config
+# ----------------------------
+- name: Write dnsmasq PXE configuration from template
+  template:
+    src: dnsmasq_pxe.conf.j2
     dest: /etc/dnsmasq.d/pxe.conf
     mode: '0644'
-    content: |
-      interface={{ hostvars['localhost'].pxe_ip.stdout | default('eth1') }}
-      bind-interfaces
-      dhcp-range=192.168.56.100,192.168.56.200,12h
-      dhcp-boot=pxelinux.0
-      enable-tftp
-      tftp-root=/srv/tftp
-      log-dhcp
-      port=0
 
 # ----------------------------
-# Test dnsmasq configuration
+# Test dnsmasq config
 # ----------------------------
-- name: Test dnsmasq config syntax
-  command: /usr/sbin/dnsmasq --test
+- name: Test dnsmasq configuration
+  command: dnsmasq --test
   register: dnsmasq_test
   changed_when: false
   ignore_errors: yes
@@ -112,6 +115,9 @@
   debug:
     var: dnsmasq_test.stdout_lines
 
+# ----------------------------
+# Stop dnsmasq before starting
+# ----------------------------
 - name: Stop dnsmasq if running
   systemd:
     name: dnsmasq
@@ -120,7 +126,7 @@
   ignore_errors: yes
 
 # ----------------------------
-# Start dnsmasq if config valid
+# Start dnsmasq only if config valid
 # ----------------------------
 - name: Start and enable dnsmasq
   systemd:
@@ -131,5 +137,10 @@
 
 - name: Warn if dnsmasq failed
   debug:
-    msg: "dnsmasq configuration failed. Check /etc/dnsmasq.d/pxe.conf"
+    msg: |
+      dnsmasq failed to start. Common issues:
+      - Port 53 still in use
+      - Invalid interface in template
+      - Configuration syntax error
+      Check with: systemctl status dnsmasq.service
   when: dnsmasq_test.rc != 0

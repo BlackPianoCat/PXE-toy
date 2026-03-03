@@ -50,14 +50,6 @@ Vagrant.configure("2") do |config|
       wget -q https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux -O vmlinuz
       wget -q https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/initrd.gz -O initrd.img
 
-      # PXE boot menu
-      cat > /srv/tftp/pxelinux.cfg/default <<EOF
-DEFAULT install
-LABEL install
-  KERNEL vmlinuz
-  APPEND initrd=initrd.img ip=dhcp
-EOF
-
       # -------------------------------------------------
       # Configure dnsmasq cleanly
       # -------------------------------------------------

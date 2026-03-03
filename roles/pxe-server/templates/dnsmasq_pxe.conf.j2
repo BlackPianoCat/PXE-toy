@@ -1,0 +1,8 @@
+# roles/pxe-server/templates/dnsmasq_pxe.conf.j2
+interface={{ pxe_interface }}
+bind-interfaces
+dhcp-range={{ dhcp_range_start }},{{ dhcp_range_end }},{{ dhcp_lease_time | default('12h') }}
+dhcp-boot=pxelinux.0
+enable-tftp
+tftp-root={{ tftp_root }}
+log-dhcp

@@ -88,8 +88,21 @@
   become: yes
   gather_facts: yes
   tasks:
-    - name: Check PXE interface IP
-      command: ip -4 addr show {{ pxe_interface }} | awk '/inet / {print $2}' | cut -d/ -f1
+
+    # --- Option 1: Using shell (compatible with your previous setup) ---
+    - name: Check PXE interface IP (shell)
+      shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {print $2}' | cut -d/ -f1
       register: pxe_ip
+      changed_when: false
+      failed_when: pxe_ip.stdout == ""
+
     - debug:
         msg: "PXE server {{ inventory_hostname }} interface {{ pxe_interface }} has IP {{ pxe_ip.stdout }}"
+
+    # --- Option 2: Using Ansible facts (cleaner) ---
+    #- name: Get PXE interface IP from facts
+    #  set_fact:
+    #    pxe_ip: "{{ ansible_facts['interfaces'][pxe_interface] | default(None) | community.general.ipaddr('ipv4') }}"
+    #
+    #- debug:
+    #    msg: "PXE server {{ inventory_hostname }} interface {{ pxe_interface }} has IP {{ pxe_ip }}"
