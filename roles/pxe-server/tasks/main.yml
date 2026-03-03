@@ -1,10 +1,7 @@
 ---
 # Main entry point for PXE server role
 # Orchestrates PXE server setup and Debian image bootstrap
-
-# 1. PXE server setup (TFTP, dnsmasq, nginx, etc.)
-- import_tasks: debootstrap.yml
-
-# 2. Bootstrap Debian rootfs for PXE clients
-- import_tasks: setup.yml
-
+# roles/pxe-server/tasks/main.yml
+- import_tasks: setup_base.yml     # base packages, directories, dnsmasq, NFS
+- import_tasks: debootstrap.yml    # build NFS root
+- import_tasks: setup_pxe.yml      # PXE menu, copy vmlinuz/initrd, dnsmasq config

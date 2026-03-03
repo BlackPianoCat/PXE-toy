@@ -1,10 +1,10 @@
 ---
 # playbook.yml
-# Purpose: Set up PXE server base packages
+# Purpose: Fully functional PXE server setup with Ansible
 
-# --------------------------
-# Global vars and host key checking
-# --------------------------
+# -------------------------------------------------
+# Global config
+# -------------------------------------------------
 - name: Configure Ansible for PXE server
   hosts: localhost
   gather_facts: no
@@ -13,20 +13,21 @@
       set_fact:
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 
-# --------------------------
-# Play 1: Ensure base packages on PXE server
-# --------------------------
-- name: Install base packages on PXE server
+# -------------------------------------------------
+# Play 1: Base packages and pre-flight checks
+# -------------------------------------------------
+- name: Ensure PXE server has base packages
   hosts: pxe_servers
   become: yes
   gather_facts: yes
   tasks:
+
     - name: Update apt cache
       apt:
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Ensure base packages are installed
+    - name: Install essential packages
       apt:
         name:
           - ntpdate
@@ -39,30 +40,56 @@
           - iproute2
           - rsync
         state: present
-      ignore_errors: yes
 
-    - name: Sync time with NTP
+    - name: Sync PXE server time with NTP
       command: ntpdate -u pool.ntp.org
       ignore_errors: yes
 
-# --------------------------
-# Play 2: PXE server setup (optional role)
-# --------------------------
-- name: Configure PXE server role
+    - name: Ensure NFS root directory exists
+      file:
+        path: /srv/debian-root
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+# -------------------------------------------------
+# Play 2: PXE server setup (roles)
+# -------------------------------------------------
+- name: Setup PXE server (TFTP, NFS, PXELINUX, dnsmasq)
   hosts: pxe_servers
   become: yes
   gather_facts: yes
   roles:
-    - pxe-server
+    - role: pxe-server
+      vars:
+        pxe_interface: eth1           # Vagrant host-only interface
+        nfs_root: /srv/debian-root
+        tftp_root: /srv/tftp
+        dhcp_range_start: 192.168.56.100
+        dhcp_range_end: 192.168.56.200
 
-# --------------------------
-# Play 3: PXE clients placeholder
-# --------------------------
-- name: PXE clients (bare, placeholder)
+# -------------------------------------------------
+# Play 3: PXE clients (bare placeholder)
+# -------------------------------------------------
+- name: PXE clients placeholder
   hosts: pxe_clients
   gather_facts: no
   tasks:
-    - name: Placeholder task
+    - name: Inform PXE clients are ready to boot
       debug:
-        msg: "PXE client is bare. Will boot via PXE once server is ready."
+        msg: "PXE clients will boot automatically once PXE server is configured."
 
+# -------------------------------------------------
+# Optional: Pre-flight checks for Vagrant network
+# -------------------------------------------------
+- name: Verify PXE server network interface
+  hosts: pxe_servers
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Check PXE interface IP
+      command: ip -4 addr show {{ pxe_interface }} | awk '/inet / {print $2}' | cut -d/ -f1
+      register: pxe_ip
+    - debug:
+        msg: "PXE server {{ inventory_hostname }} interface {{ pxe_interface }} has IP {{ pxe_ip.stdout }}"

@@ -1,0 +1,86 @@
+---
+# roles/pxe-server/tasks/setup_base.yml
+# Purpose: install PXE/NFS packages, prepare directories, start NFS server
+
+# ----------------------------
+# Set PXE interface
+# ----------------------------
+- name: Set PXE interface fact
+  set_fact:
+    pxe_interface: "eth1"   # matches Vagrant host-only NIC
+
+- name: Get PXE server IP
+  shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {gsub("/.*","",$2); print $2}'
+  register: pxe_ip
+  changed_when: false
+
+- debug:
+    msg: "PXE interface={{ pxe_interface }}, IP={{ pxe_ip.stdout }}"
+
+# ----------------------------
+# Install required packages
+# ----------------------------
+- name: Install PXE/NFS packages
+  apt:
+    name:
+      - dnsmasq
+      - pxelinux
+      - syslinux-common
+      - nfs-kernel-server
+      - tftp
+      - unzip
+      - net-tools
+      - iproute2
+      - rsync
+    state: present
+    update_cache: yes
+
+# ----------------------------
+# Prepare directories
+# ----------------------------
+- name: Ensure TFTP directory
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: '0755'
+  loop:
+    - /srv/tftp
+    - /srv/tftp/pxelinux.cfg
+
+- name: Ensure NFS root directory
+  file:
+    path: /srv/debian-root
+    state: directory
+    owner: nobody
+    group: nogroup
+    mode: '0755'
+
+# ----------------------------
+# Configure NFS exports
+# ----------------------------
+- name: Create /etc/exports for PXE root
+  copy:
+    dest: /etc/exports
+    mode: '0644'
+    content: |
+      /srv/debian-root 192.168.56.0/24(rw,sync,no_root_squash,no_subtree_check)
+
+- name: Reload NFS exports
+  command: exportfs -ra
+
+# ----------------------------
+# Start NFS server
+# ----------------------------
+- name: Start and enable nfs-kernel-server
+  service:
+    name: nfs-kernel-server
+    state: started
+    enabled: yes
+
+# ----------------------------
+# Optional: bring PXE interface up
+# ----------------------------
+- name: Bring PXE interface up
+  command: ip link set dev {{ pxe_interface }} up

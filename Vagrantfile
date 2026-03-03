@@ -1,52 +1,91 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "debian/bookworm64"
 
-  # ----------------------------
-  # PXE Server only
-  # ----------------------------
   config.vm.define "pxe-server" do |server|
     server.vm.hostname = "pxe-server"
 
-    # Private network with static IP to match Ansible hosts
+    # Host-only PXE network
     server.vm.network "private_network", ip: "192.168.56.10"
 
     server.vm.provider "virtualbox" do |vb|
-      vb.name = "pxe-server"
+      vb.name   = "pxe-server"
       vb.memory = 2048
-      vb.cpus = 2
-      vb.gui = false
+      vb.cpus   = 2
+      vb.gui    = false
     end
 
-    # Ensure Vagrant injects SSH key for Ansible
-    server.ssh.insert_key = true
-
-    # Provision minimal setup
-    server.vm.provision "shell", inline: <<-SHELL
+    server.vm.provision "shell", inline: <<-'SHELL'
       #!/bin/bash
       set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
 
-      # Wait for network
-      until ping -c1 8.8.8.8 &>/dev/null; do sleep 2; done
+      apt-get update -y
+      apt-get install -y \
+        dnsmasq \
+        nfs-kernel-server \
+        pxelinux \
+        syslinux-common \
+        wget \
+        curl
 
-      # Install base packages
-      DEBIAN_FRONTEND=noninteractive apt-get update -y
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        sudo vim curl wget net-tools iproute2 ntpdate rsync debootstrap \
-        systemd-timesyncd dnsmasq nfs-kernel-server pxelinux syslinux-common tftp unzip
+      # -------------------------------------------------
+      # Detect the host-only interface automatically
+      # -------------------------------------------------
 
-      # Sync time (non-blocking)
-      ntpdate -u pool.ntp.org || true
+      PXE_IFACE=$(ip -o -4 addr show | awk '/192\.168\.56/ {print $2}')
+      echo "Detected PXE interface: ${PXE_IFACE}"
 
-      # Hostname and hosts file
-      echo "pxe-server" > /etc/hostname
-      cat > /etc/hosts <<EOF
-127.0.0.1   localhost
-127.0.1.1   pxe-server
+      # -------------------------------------------------
+      # Prepare TFTP structure
+      # -------------------------------------------------
+
+      mkdir -p /srv/tftp/pxelinux.cfg
+      mkdir -p /srv/nfs/rootfs
+
+      cp /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
+      cp /usr/lib/syslinux/modules/bios/ldlinux.c32 /srv/tftp/
+
+      # Debian installer kernel
+      cd /srv/tftp
+      wget -q https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux -O vmlinuz
+      wget -q https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/initrd.gz -O initrd.img
+
+      # PXE boot menu
+      cat > /srv/tftp/pxelinux.cfg/default <<EOF
+DEFAULT install
+LABEL install
+  KERNEL vmlinuz
+  APPEND initrd=initrd.img ip=dhcp
 EOF
 
-      systemctl enable systemd-timesyncd
-      systemctl restart systemd-timesyncd || true
+      # -------------------------------------------------
+      # Configure dnsmasq cleanly
+      # -------------------------------------------------
+
+      systemctl stop dnsmasq || true
+
+      cat > /etc/dnsmasq.conf <<EOF
+port=0
+interface=${PXE_IFACE}
+dhcp-range=192.168.56.100,192.168.56.200,12h
+enable-tftp
+tftp-root=/srv/tftp
+dhcp-boot=pxelinux.0
+log-dhcp
+EOF
+
+      systemctl enable dnsmasq
+      systemctl restart dnsmasq
+
+      # -------------------------------------------------
+      # Configure NFS export
+      # -------------------------------------------------
+
+      echo "/srv/nfs/rootfs *(rw,sync,no_subtree_check,no_root_squash)" > /etc/exports
+      exportfs -ra
+      systemctl enable nfs-kernel-server
+      systemctl restart nfs-kernel-server
+
     SHELL
   end
 end
-
