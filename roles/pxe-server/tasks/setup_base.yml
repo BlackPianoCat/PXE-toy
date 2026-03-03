@@ -1,21 +1,25 @@
 ---
 # roles/pxe-server/tasks/setup_base.yml
-# Purpose: install PXE/NFS packages, prepare directories, start NFS server
+# Install and configure NFS properly for PXE root
 
 # ----------------------------
 # Set PXE interface
 # ----------------------------
 - name: Set PXE interface fact
   set_fact:
-    pxe_interface: "eth1"   # matches Vagrant host-only NIC
+    pxe_interface: "eth1"   # Vagrant host-only NIC
 
-- name: Get PXE server IP
-  shell: ip -4 addr show {{ pxe_interface }} | awk '/inet / {gsub("/.*","",$2); print $2}'
-  register: pxe_ip
+- name: Get PXE server IP from interface
+  command: ip -4 -o addr show {{ pxe_interface }}
+  register: pxe_ip_raw
   changed_when: false
 
+- name: Extract PXE IP
+  set_fact:
+    pxe_ip: "{{ pxe_ip_raw.stdout.split()[3].split('/')[0] }}"
+
 - debug:
-    msg: "PXE interface={{ pxe_interface }}, IP={{ pxe_ip.stdout }}"
+    msg: "PXE interface={{ pxe_interface }}, IP={{ pxe_ip }}"
 
 # ----------------------------
 # Install required packages
@@ -27,8 +31,8 @@
       - pxelinux
       - syslinux-common
       - nfs-kernel-server
+      - rpcbind
       - tftp
-      - unzip
       - net-tools
       - iproute2
       - rsync
@@ -36,9 +40,18 @@
     update_cache: yes
 
 # ----------------------------
+# Ensure required services are enabled
+# ----------------------------
+- name: Enable and start rpcbind
+  service:
+    name: rpcbind
+    state: started
+    enabled: yes
+
+# ----------------------------
 # Prepare directories
 # ----------------------------
-- name: Ensure TFTP directory
+- name: Ensure TFTP directories
   file:
     path: "{{ item }}"
     state: directory
@@ -49,38 +62,48 @@
     - /srv/tftp
     - /srv/tftp/pxelinux.cfg
 
-- name: Ensure NFS root directory
+- name: Ensure NFS root directory exists
   file:
     path: /srv/debian-root
     state: directory
-    owner: nobody
-    group: nogroup
+    owner: root
+    group: root
     mode: '0755'
+
+# Important: allow root access via no_root_squash
+- name: Ensure correct permissions on NFS root
+  file:
+    path: /srv/debian-root
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+    recurse: yes
 
 # ----------------------------
 # Configure NFS exports
 # ----------------------------
-- name: Create /etc/exports for PXE root
+- name: Configure /etc/exports for PXE root
   copy:
     dest: /etc/exports
     mode: '0644'
     content: |
-      /srv/debian-root 192.168.56.0/24(rw,sync,no_root_squash,no_subtree_check)
+      /srv/debian-root 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
 
-- name: Reload NFS exports
+- name: Apply NFS exports
   command: exportfs -ra
 
 # ----------------------------
-# Start NFS server
+# Restart NFS completely
 # ----------------------------
-- name: Start and enable nfs-kernel-server
+- name: Restart NFS server
   service:
     name: nfs-kernel-server
-    state: started
+    state: restarted
     enabled: yes
 
 # ----------------------------
-# Optional: bring PXE interface up
+# Ensure PXE interface is up
 # ----------------------------
 - name: Bring PXE interface up
   command: ip link set dev {{ pxe_interface }} up

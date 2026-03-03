@@ -56,6 +56,13 @@
     executable: /bin/bash
 
 # ----------------------------
+# Detect PXE interface IP dynamically
+# ----------------------------
+- name: Detect PXE server IP
+  set_fact:
+    pxe_ip: "{{ ansible_all_ipv4_addresses | select('match','192\\.168\\.56\\..*') | list | first }}"
+
+# ----------------------------
 # PXELINUX menu (template)
 # ----------------------------
 - name: Create PXELINUX default config from template
@@ -64,8 +71,11 @@
     dest: "{{ tftp_root | default('/srv/tftp') }}/pxelinux.cfg/default"
     mode: '0644'
   vars:
-    pxe_ip: "192.168.56.10"   # <- must match PXE interface IP
+    pxe_ip: "{{ pxe_ip }}"   # dynamic now
     nfs_root: "/srv/debian-root"
+
+- debug:
+    msg: "PXE IP detected: {{ pxe_ip }}"
     
 # ----------------------------
 # DNS/DHCP setup
